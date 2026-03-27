@@ -1,0 +1,10 @@
+/frontend/node_modules
+/frontend/dist
+/Client_Deploy/node_modules
+/Client_Deploy/Client_Deploy.zip
+/frontend/Client_Deploy
+/backend/venv
+/backend/__pycache__
+/backend/*.db
+/backend/.env
+.env
