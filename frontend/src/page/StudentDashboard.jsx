@@ -1,7 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 // ✅ Import useAuth เพื่อดึงข้อมูล User ที่ Login เข้ามา
 import { useAuth } from '../App';
+import { apiFetch } from '../api';
 
 // --- CSS Styles ---
 const styles = `
@@ -70,27 +71,24 @@ function StudentDashboard() {
     const [showBookingsModal, setShowBookingsModal] = useState(false);
     const [confirmCancel, setConfirmCancel] = useState(null);
 
-    const fetchMyBookings = async () => {
+    const fetchMyBookings = useCallback(async () => {
         if (!user) return;
         try {
-            const response = await fetch("http://localhost:8000/my-bookings", {
-                headers: { "Authorization": `Bearer ${user.token}` }
-            });
+            const response = await apiFetch("/my-bookings");
             if (response.ok) {
                 const data = await response.json();
-                setMyBookings(data.filter(b => b.status === "confirmed"));
+                setMyBookings(data.filter(b => b.status === "active"));
             }
         } catch (error) {
             console.error(error);
         }
-    };
+    }, [user]);
 
     const executeCancelBooking = async (bookingId) => {
         setConfirmCancel(null);
         try {
-            const response = await fetch(`http://localhost:8000/bookings/${bookingId}`, {
-                method: "DELETE",
-                headers: { "Authorization": `Bearer ${user.token}` }
+            const response = await apiFetch(`/bookings/${bookingId}`, {
+                method: "DELETE"
             });
             if (response.ok) {
                 setToast({ type: 'success', message: "Booking cancelled successfully" });
@@ -99,14 +97,14 @@ function StudentDashboard() {
             } else {
                 setToast({ type: 'error', message: "Failed to cancel booking" });
             }
-        } catch (error) {
+        } catch {
             setToast({ type: 'error', message: "Network error" });
         }
     };
 
-    const fetchStations = async () => {
+    const fetchStations = useCallback(async () => {
         try {
-            const response = await fetch("http://localhost:8000/computers");
+            const response = await apiFetch("/computers");
             if (response.ok) {
                 const data = await response.json();
                 setStations(data);
@@ -117,7 +115,7 @@ function StudentDashboard() {
         } finally {
             setLoading(false);
         }
-    };
+    }, []);
 
     useEffect(() => {
         fetchStations();
@@ -127,7 +125,7 @@ function StudentDashboard() {
             fetchMyBookings();
         }, 10000);
         return () => clearInterval(interval);
-    }, [user]);
+    }, [user, fetchStations, fetchMyBookings]);
 
     const availableCount = stations.filter(s => s.is_online && s.status === 'available').length;
 
@@ -144,26 +142,14 @@ function StudentDashboard() {
         if (!selectedStation) return;
         setIsBooking(true);
 
-        const startTime = new Date();
-        const endTime = new Date(startTime.getTime() + 60 * 60 * 1000); // 1 Hour Duration
-
-        // Helper to get Local ISO String (ignoring timezone conversion to UTC)
-        const toLocalISOString = (date) => {
-            const offset = date.getTimezoneOffset() * 60000;
-            return new Date(date.getTime() - offset).toISOString().slice(0, -1); // Remove 'Z'
-        };
-
         try {
-            const response = await fetch("http://localhost:8000/bookings", {
+            const response = await apiFetch("/bookings", {
                 method: "POST",
                 headers: {
-                    "Content-Type": "application/json",
-                    "Authorization": `Bearer ${user.token}`
+                    "Content-Type": "application/json"
                 },
                 body: JSON.stringify({
-                    computer_id: selectedStation.id,
-                    start_time: toLocalISOString(startTime),
-                    end_time: toLocalISOString(endTime)
+                    computer_id: selectedStation.id
                 })
             });
 
@@ -175,9 +161,9 @@ function StudentDashboard() {
                 fetchMyBookings(); // Refresh bookings
             } else {
                 const err = await response.json();
-                setToast({ type: 'error', message: err.detail || "Booking failed" });
+                setToast({ type: 'error', message: err.error || "Booking failed" });
             }
-        } catch (error) {
+        } catch {
             setToast({ type: 'error', message: "Network error during booking" });
         } finally {
             setIsBooking(false);
@@ -265,6 +251,11 @@ function StudentDashboard() {
                     </div>
 
                     <div className="flex-1 overflow-y-auto custom-scrollbar pr-2 pb-6">
+                        {loading ? (
+                            <div className="flex justify-center p-12" role="status">Loading stations…</div>
+                        ) : stations.length === 0 ? (
+                            <div className="text-center p-12 text-slate-500">No stations are registered yet.</div>
+                        ) : (
                         <div className="station-grid">
                             {stations.map((station) => {
                                 const isOnline = station.is_online;
@@ -308,6 +299,7 @@ function StudentDashboard() {
                                 );
                             })}
                         </div>
+                        )}
                     </div>
                 </div>
             </main>
@@ -382,7 +374,7 @@ function StudentDashboard() {
                             ) : (
                                 <div className="flex flex-col gap-4">
                                     {myBookings.map(b => {
-                                        const stationName = b.computer?.name || (b.computer_id ? `Unknown-ID:${b.computer_id}` : 'Unassigned Station');
+                                        const stationName = b.computer_name || b.computer?.name || (b.computer_id ? `COM-${b.computer_id}` : 'Unassigned Station');
                                         return (
                                             <div key={b.id} className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm relative overflow-hidden">
                                                 <div className="absolute top-0 left-0 w-1.5 h-full bg-emerald-400"></div>
@@ -407,9 +399,14 @@ function StudentDashboard() {
                                                     </div>
                                                 </div>
                                                 
-                                                <button onClick={() => setConfirmCancel(b.id)} className="w-full py-2 bg-white border border-rose-200 text-rose-600 hover:bg-rose-50 hover:border-rose-300 rounded-lg text-xs font-bold transition-all shadow-sm">
-                                                    Cancel Booking
-                                                </button>
+                                                <div className="flex justify-end">
+                                                    <button
+                                                        onClick={() => setConfirmCancel(b.id)}
+                                                        className="py-2 px-3 bg-white border border-rose-200 text-rose-600 hover:bg-rose-50 hover:border-rose-300 rounded-lg text-xs font-bold transition-all shadow-sm"
+                                                    >
+                                                        Cancel
+                                                    </button>
+                                                </div>
                                             </div>
                                         );
                                     })}

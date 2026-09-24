@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../App';
+import { apiFetch } from '../api';
 
 const Toast = ({ message, type, onClose }) => {
     useEffect(() => { const timer = setTimeout(onClose, 3000); return () => clearTimeout(timer); }, [onClose]);
@@ -20,19 +21,12 @@ function StaffSessionControl() {
     const [toast, setToast] = useState(null);
     const [alert, setAlert] = useState(null);
 
-    const fetchBookings = async () => {
+    const fetchBookings = useCallback(async () => {
         try {
-            const baseUrl = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
-                ? 'http://localhost:8000'
-                : `http://${window.location.hostname}:8000`;
-
-            const response = await fetch(`${baseUrl}/admin/bookings`, {
-                headers: { "Authorization": `Bearer ${user.token}` }
-            });
+            const response = await apiFetch("/admin/bookings", { user });
             if (response.ok) {
                 const data = await response.json();
-                // Filter only confirmed or active bookings
-                const activeBookings = data.filter(b => b.status === "confirmed" || b.status === "active");
+                const activeBookings = data.filter(b => b.status === "active");
                 setBookings(activeBookings);
             }
         } catch (error) {
@@ -40,7 +34,7 @@ function StaffSessionControl() {
         } finally {
             setLoading(false);
         }
-    };
+    }, [user]);
 
     useEffect(() => {
         if (user) {
@@ -48,23 +42,23 @@ function StaffSessionControl() {
             const interval = setInterval(fetchBookings, 10000);
             return () => clearInterval(interval);
         }
-    }, [user]);
+    }, [user, fetchBookings]);
 
     const calculateRemainingTime = (endTimeString) => {
         if (!endTimeString) return "Unknown";
         // Handle timezone issues manually if needed, or assume UTC/local matching
         const end = new Date(endTimeString);
         if (!end.getTime()) return "Invalid Date";
-        
+
         const now = new Date();
         const diffMs = end - now;
-        
+
         if (diffMs <= 0) return "Expired";
-        
+
         const diffMins = Math.floor(diffMs / 60000);
         const hours = Math.floor(diffMins / 60);
         const mins = diffMins % 60;
-        
+
         if (hours > 0) return `${hours}h ${mins}m remaining`;
         return `${mins} mins remaining`;
     };
@@ -74,11 +68,32 @@ function StaffSessionControl() {
         const end = new Date(endTimeString);
         const now = new Date();
         const diffMins = Math.floor((end - now) / 60000);
-        
+
         if (diffMins <= 0) return 'Expired';
         if (diffMins <= 5) return 'Expire Soon';
         if (diffMins <= 15) return 'Warning';
         return 'Active';
+    };
+
+    const handleExtend = async (bookingId, minutes) => {
+        try {
+            const response = await apiFetch(`/bookings/${bookingId}/extend`, {
+                method: "POST",
+                user,
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ add_minutes: minutes })
+            });
+
+            if (response.ok) {
+                setToast({ type: 'success', message: `Added +${minutes} minutes to session #${bookingId}` });
+                fetchBookings();
+            } else {
+                const err = await response.json();
+                setToast({ type: 'error', message: err.error || "Failed to extend session" });
+            }
+        } catch {
+            setToast({ type: 'error', message: "Network error extending session" });
+        }
     };
 
     const handleTerminate = async (bookingId) => {
@@ -88,11 +103,50 @@ function StaffSessionControl() {
             type: "danger",
             onConfirm: async () => {
                 setAlert(null);
-                setToast({ type: 'success', message: `Terminate functionality executed for booking ID: ${bookingId}` });
+                try {
+                    const response = await apiFetch(`/bookings/${bookingId}`, {
+                        method: "DELETE",
+                        user
+                    });
+
+                    if (response.ok) {
+                        setToast({ type: 'success', message: `Session #${bookingId} terminated successfully.` });
+                        fetchBookings();
+                    } else {
+                        setToast({ type: 'error', message: "Failed to terminate session." });
+                    }
+                } catch (error) {
+                    console.error("Terminate session error:", error);
+                    setToast({ type: 'error', message: "Network error terminating session." });
+                }
             }
         });
     };
-    
+
+    const [broadcastMsg, setBroadcastMsg] = useState('');
+
+    const handleBroadcast = async () => {
+        if (!broadcastMsg.trim()) return;
+        try {
+            const response = await apiFetch(`/api/admin/computers/broadcast`, {
+                method: "POST",
+                user,
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ command: "NOTIFICATION", data: { message: broadcastMsg } })
+            });
+
+            if (response.ok) {
+                const data = await response.json();
+                setToast({ type: 'success', message: `Broadcast message sent to ${data.delivered_count || 0} online screens.` });
+                setBroadcastMsg('');
+            } else {
+                setToast({ type: 'error', message: "Failed to broadcast message." });
+            }
+        } catch {
+            setToast({ type: 'error', message: "Network error sending broadcast." });
+        }
+    };
+
     const handleGlobalAction = async (action) => {
         setAlert({
             title: `Confirm ${action} ALL?`,
@@ -100,7 +154,23 @@ function StaffSessionControl() {
             type: "danger",
             onConfirm: async () => {
                 setAlert(null);
-                setToast({ type: 'success', message: `Global ${action} command sent.` });
+                try {
+                    const response = await apiFetch(`/api/admin/computers/broadcast`, {
+                        method: "POST",
+                        user,
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ command: action.toUpperCase() })
+                    });
+
+                    if (response.ok) {
+                        const data = await response.json();
+                        setToast({ type: 'success', message: `Global ${action} command sent to ${data.delivered_count || 0} machines.` });
+                    } else {
+                        setToast({ type: 'error', message: `Failed to execute global ${action}.` });
+                    }
+                } catch {
+                    setToast({ type: 'error', message: "Network error sending global command." });
+                }
             }
         });
     };
@@ -109,8 +179,10 @@ function StaffSessionControl() {
     const filteredBookings = bookings.filter(b => {
         if (!searchQuery) return true;
         const search = searchQuery.toLowerCase();
-        const usernameMatch = b.user?.username?.toLowerCase().includes(search);
-        const stationMatch = b.computer?.name?.toLowerCase().includes(search);
+        const username = b.user?.username || b.user_username || b.user_name || `user${b.user_id}`;
+        const station = b.computer?.name || b.computer_name || `com-${b.computer_id}`;
+        const usernameMatch = username.toLowerCase().includes(search);
+        const stationMatch = station.toLowerCase().includes(search);
         return usernameMatch || stationMatch;
     });
 
@@ -167,8 +239,8 @@ function StaffSessionControl() {
                             filteredBookings.map((session, i) => {
                                 const status = getStatusType(session.end_time);
                                 const remaining = calculateRemainingTime(session.end_time);
-                                const username = session.user?.username || `User ${session.user_id}`;
-                                const stationName = session.computer?.name || `Station ${session.computer_id}`;
+                                const username = session.user?.username || session.user_username || session.user_name || `User #${session.user_id}`;
+                                const stationName = session.computer?.name || session.computer_name || `COM-${session.computer_id}`;
                                 const isExpired = status === 'Expired';
                                 
                                 return (
@@ -186,8 +258,22 @@ function StaffSessionControl() {
                                             <p className={`text-xs font-bold ${isExpired || status === 'Expire Soon' ? 'text-red-500' :
                                                     status === 'Warning' ? 'text-amber-500' : 'text-emerald-500'
                                                 }`}>{remaining}</p>
-                                            <div className="flex justify-end gap-1 mt-1">
-                                                <button className="text-[10px] font-bold text-red-500 hover:text-red-700 hover:underline" onClick={() => handleTerminate(session.id)}>Terminate</button>
+                                            <div className="flex justify-end items-center gap-2 mt-1.5">
+                                                <button
+                                                    className="text-[10px] font-bold text-purple-600 hover:text-purple-800 hover:bg-purple-50 px-1.5 py-0.5 rounded border border-purple-200 transition-colors"
+                                                    onClick={() => handleExtend(session.id, 30)}
+                                                    title="Add 30 minutes"
+                                                >
+                                                    +30m
+                                                </button>
+                                                <button
+                                                    className="text-[10px] font-bold text-purple-600 hover:text-purple-800 hover:bg-purple-50 px-1.5 py-0.5 rounded border border-purple-200 transition-colors"
+                                                    onClick={() => handleExtend(session.id, 60)}
+                                                    title="Add 60 minutes"
+                                                >
+                                                    +60m
+                                                </button>
+                                                <button className="text-[10px] font-bold text-red-500 hover:text-red-700 hover:underline ml-1" onClick={() => handleTerminate(session.id)}>Terminate</button>
                                             </div>
                                         </div>
                                     </div>
@@ -206,14 +292,10 @@ function StaffSessionControl() {
                         </h3>
                         <p className="text-xs text-slate-500 mb-6">Use these actions only in case of emergency or system maintenance.</p>
 
-                        <div className="grid grid-cols-2 gap-4">
+                        <div className="grid grid-cols-1 gap-4">
                             <button onClick={() => handleGlobalAction('Lock')} className="p-4 rounded-xl bg-red-50 text-red-600 border border-red-100 font-bold text-sm hover:bg-red-100 transition-colors flex flex-col items-center gap-2">
                                 <span className="material-symbols-outlined text-2xl">lock</span>
                                 Lock All Stations
-                            </button>
-                            <button onClick={() => handleGlobalAction('Shutdown')} className="p-4 rounded-xl bg-amber-50 text-amber-600 border border-amber-100 font-bold text-sm hover:bg-amber-100 transition-colors flex flex-col items-center gap-2">
-                                <span className="material-symbols-outlined text-2xl">power_settings_new</span>
-                                Shutdown Lab
                             </button>
                         </div>
                     </div>
@@ -221,10 +303,15 @@ function StaffSessionControl() {
                     <div className="glass-card rounded-2xl p-6 shadow-sm">
                         <h3 className="font-bold text-slate-800 mb-4">Message Broadcast</h3>
                         <textarea
+                            value={broadcastMsg}
+                            onChange={(e) => setBroadcastMsg(e.target.value)}
                             className="w-full h-32 bg-slate-50 border border-slate-200 rounded-xl p-4 text-sm outline-none focus:ring-2 focus:ring-purple-200 resize-none mb-4"
                             placeholder="Type a message to send to all active screens..."
                         ></textarea>
-                        <button className="w-full py-3 bg-slate-800 text-white rounded-xl text-sm font-bold hover:bg-slate-900 transition-all flex items-center justify-center gap-2">
+                        <button
+                            onClick={handleBroadcast}
+                            className="w-full py-3 bg-slate-800 text-white rounded-xl text-sm font-bold hover:bg-slate-900 transition-all flex items-center justify-center gap-2"
+                        >
                             <span className="material-symbols-outlined text-lg">send</span>
                             Broadcast Message
                         </button>

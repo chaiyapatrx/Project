@@ -37,7 +37,7 @@ const styles = `
 `;
 
 function AdminDashboard() {
-    const { logout } = useAuth();
+    const { user, logout } = useAuth();
     // Initialize from localStorage or default to 'overview'
     const [activeTab, setActiveTabState] = useState(() => localStorage.getItem('adminActiveTab') || 'overview');
 
@@ -132,12 +132,14 @@ function AdminDashboard() {
 
                     <div className="p-4 border-t border-slate-100">
                         <div className="bg-slate-50 rounded-xl p-3 flex items-center gap-3">
-                            <div className="w-10 h-10 rounded-full bg-purple-100 flex items-center justify-center text-[#7c3aed] font-bold">AD</div>
-                            <div className="flex-1 min-w-0">
-                                <p className="text-xs font-bold text-slate-800 truncate">Admin User</p>
-                                <p className="text-[10px] text-slate-500 truncate">System Controller</p>
+                            <div className="w-10 h-10 rounded-full bg-purple-100 flex items-center justify-center text-[#7c3aed] font-bold uppercase">
+                                {(user?.username || user?.full_name || 'SA').substring(0, 2)}
                             </div>
-                            <button onClick={logout} className="text-slate-400 hover:text-slate-600 transition-colors">
+                            <div className="flex-1 min-w-0">
+                                <p className="text-xs font-bold text-slate-800 truncate">{user?.full_name || user?.username || 'Super Admin'}</p>
+                                <p className="text-[10px] text-slate-500 truncate capitalize">@{user?.username || 'sadmin'} • {user?.role || 'admin'}</p>
+                            </div>
+                            <button onClick={logout} className="text-slate-400 hover:text-rose-500 transition-colors" title="Logout">
                                 <span className="material-symbols-outlined text-lg">logout</span>
                             </button>
                         </div>

@@ -1,5 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useAuth } from '../App';
+import { apiFetch } from '../api';
+import { toCSV } from '../csv';
 import ExecOverview from './ExecOverview';
 import ExecReports from './ExecReports';
 
@@ -35,7 +37,7 @@ const styles = `
 function ExecDashboard() {
     const { logout, user } = useAuth();
     const [activeTab, setActiveTabState] = useState(() => localStorage.getItem('execActiveTab') || 'overview');
-    const [filterPeriod, setFilterPeriod] = useState('เทอม: 1/2568 (Fall 2025)');
+    const [filterPeriod, setFilterPeriod] = useState('month');
     const [isDropdownOpen, setIsDropdownOpen] = useState(false);
     const dropdownRef = useRef(null);
 
@@ -51,11 +53,10 @@ function ExecDashboard() {
     }, []);
 
     const filterOptions = [
-        'วันนี้ (Today)',
-        'สัปดาห์นี้ (This Week)',
-        'เดือนนี้ (This Month)',
-        'เทอม: 1/2568 (Fall 2025)',
-        'เทอม: 2/2568 (Spring 2025)'
+        { value: 'day', label: 'วันนี้ (Today)' },
+        { value: 'week', label: 'สัปดาห์นี้ (This Week)' },
+        { value: 'month', label: 'เดือนนี้ (This Month)' },
+        { value: 'all', label: 'ทั้งหมด (All Time)' }
     ];
 
     const setActiveTab = (tab) => {
@@ -66,8 +67,27 @@ function ExecDashboard() {
     const renderContent = () => {
         switch (activeTab) {
             case 'overview': return <ExecOverview />;
-            case 'reports': return <ExecReports />;
+            case 'reports': return <ExecReports period={filterPeriod} />;
             default: return <ExecOverview />;
+        }
+    };
+
+    const exportReport = async () => {
+        try {
+            const res = await apiFetch(`/admin/usage-history?period=${encodeURIComponent(filterPeriod)}`);
+            if (!res.ok) return;
+            const data = await res.json();
+            const rows = data.map(item => [item.id, item.user_name || item.user_id, item.department || '-', item.computer_name || item.computer_id, item.start_time, item.end_time || '-', item.duration_minutes || 0, item.termination_reason || 'normal']);
+            const blob = new Blob([toCSV(["Session ID", "User", "Department", "Computer", "Start Time", "End Time", "Duration Minutes", "Status"], rows)], { type: 'text/csv;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = `executive_report_${new Date().toISOString().slice(0, 10)}.csv`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+        } catch (err) {
+            console.error("Export report error:", err);
         }
     };
 
@@ -148,7 +168,7 @@ function ExecDashboard() {
                                 >
                                     <span className="flex items-center gap-2">
                                         <span className="material-symbols-outlined text-sm text-slate-400">calendar_month</span>
-                                        {filterPeriod}
+                                        {filterOptions.find(option => option.value === filterPeriod)?.label}
                                     </span>
                                     <span className={`material-symbols-outlined text-sm transition-transform duration-200 ${isDropdownOpen ? 'rotate-180 text-[#7c3aed]' : 'text-slate-400'}`}>expand_more</span>
                                 </button>
@@ -156,21 +176,21 @@ function ExecDashboard() {
                                 {isDropdownOpen && (
                                     <div className="absolute top-full right-0 mt-2 w-full bg-white border border-slate-100 rounded-xl shadow-xl shadow-slate-200/50 overflow-hidden z-50 animate-zoom-in">
                                         <div className="py-1">
-                                            {filterOptions.map((option, idx) => (
+                                            {filterOptions.map((option) => (
                                                 <button
-                                                    key={idx}
+                                                    key={option.value}
                                                     onClick={() => {
-                                                        setFilterPeriod(option);
+                                                        setFilterPeriod(option.value);
                                                         setIsDropdownOpen(false);
                                                     }}
                                                     className={`w-full text-left px-4 py-2.5 text-xs font-bold transition-colors flex items-center justify-between ${
-                                                        filterPeriod === option 
+                                                        filterPeriod === option.value
                                                             ? 'bg-purple-50 text-[#7c3aed]' 
                                                             : 'text-slate-600 hover:bg-slate-50 hover:text-slate-800'
                                                     }`}
                                                 >
-                                                    {option}
-                                                    {filterPeriod === option && (
+                                                    {option.label}
+                                                    {filterPeriod === option.value && (
                                                         <span className="material-symbols-outlined text-sm">check</span>
                                                     )}
                                                 </button>
@@ -179,7 +199,10 @@ function ExecDashboard() {
                                     </div>
                                 )}
                             </div>
-                            <button className="bg-[#7c3aed] text-white px-5 py-2 rounded-xl text-xs font-bold flex items-center gap-2 shadow-lg shadow-purple-200 hover:bg-[#6d28d9] transition-all">
+                            <button
+                                onClick={exportReport}
+                                className="bg-[#7c3aed] text-white px-5 py-2 rounded-xl text-xs font-bold flex items-center gap-2 shadow-lg shadow-purple-200 hover:bg-[#6d28d9] transition-all"
+                            >
                                 <span className="material-symbols-outlined text-sm">download</span>
                                 ส่งออกรายงาน (Export)
                             </button>

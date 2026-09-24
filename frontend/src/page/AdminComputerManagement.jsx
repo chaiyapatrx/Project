@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../App';
+import { apiFetch } from '../api';
 const Toast = ({ message, type, onClose }) => {
     useEffect(() => { const timer = setTimeout(onClose, 3000); return () => clearTimeout(timer); }, [onClose]);
     const bgClass = type === 'success' ? 'bg-emerald-50 border-emerald-200 text-emerald-800' : 'bg-rose-50 border-rose-200 text-rose-800';
@@ -20,59 +21,74 @@ function AdminComputerManagement() {
     const [isUpdating, setIsUpdating] = useState(false);
     const [isAddModalOpen, setIsAddModalOpen] = useState(false);
     const [newComputerName, setNewComputerName] = useState('');
+    const [provisionedAgent, setProvisionedAgent] = useState(null);
 
-    const fetchComputers = async () => {
+    const fetchComputers = useCallback(async () => {
         try {
-            const baseUrl = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
-                ? 'http://localhost:8000'
-                : `http://${window.location.hostname}:8000`;
-
-            const response = await fetch(`${baseUrl}/computers`, {
-                headers: { "Authorization": `Bearer ${user.token}` }
-            });
+            const response = await apiFetch("/admin/computers", { user });
             if (response.ok) {
                 const data = await response.json();
                 setComputers(data);
+            } else {
+                setToast({ type: 'error', message: "Failed to load stations" });
             }
         } catch (error) {
             console.error("Error fetching computers:", error);
         } finally {
             setLoading(false);
         }
-    };
+    }, [user]);
 
     useEffect(() => {
         if (user) fetchComputers();
-    }, [user]);
+    }, [user, fetchComputers]);
 
     const handleAddComputer = async (e) => {
         e.preventDefault();
         try {
-            const baseUrl = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
-                ? 'http://localhost:8000'
-                : `http://${window.location.hostname}:8000`;
-
-            const response = await fetch(`${baseUrl}/computers`, {
+            const response = await apiFetch("/computers", {
                 method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    "Authorization": `Bearer ${user.token}`
-                },
+                user,
+                headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ name: newComputerName })
             });
 
             if (response.ok) {
+                const data = await response.json();
                 setIsAddModalOpen(false);
                 setNewComputerName('');
-                setToast({ type: 'success', message: "Computer created successfully" });
-                fetchComputers();
+                setProvisionedAgent({ name: data.name, secret: data.agent_secret });
+                setToast({ type: 'success', message: "Station created. Save its one-time agent secret." });
+                await fetchComputers();
             } else {
-                setToast({ type: 'error', message: "Failed to create computer" });
+                const data = await response.json().catch(() => ({}));
+                setToast({ type: 'error', message: data.error || "Failed to create computer" });
             }
         } catch (error) {
             console.error("Error creating computer:", error);
             setToast({ type: 'error', message: "Error creating computer" });
         }
+    };
+
+    const handleRotateAgentSecret = (computer) => {
+        setAlert({
+            title: "Rotate agent secret?",
+            message: `The current agent for ${computer.name} will disconnect. Update its config.json with the new secret before reconnecting.`,
+            type: 'warning',
+            onConfirm: async () => {
+                setAlert(null);
+                try {
+                    const response = await apiFetch(`/api/admin/computers/${computer.id}/agent-secret`, { method: "POST", user });
+                    const data = await response.json();
+                    if (!response.ok) throw new Error(data.error || "Failed to rotate agent secret");
+                    setProvisionedAgent({ name: computer.name, secret: data.agent_secret });
+                    setSelectedComputer(null);
+                    await fetchComputers();
+                } catch (error) {
+                    setToast({ type: 'error', message: error.message || "Failed to rotate agent secret" });
+                }
+            }
+        });
     };
 
     const [alert, setAlert] = useState(null); // { title, message, onConfirm, type: 'danger'|'warning' }
@@ -85,11 +101,24 @@ function AdminComputerManagement() {
             message: `Are you sure you want to ${action} ALL ${computers.length} computers? This cannot be undone.`,
             type: 'danger',
             onConfirm: async () => {
-                // Mock Batch API
-                console.log(`Executing Batch ${action}`);
-                // await fetch(`http://localhost:8000/api/batch/${action}`, ...)
                 setAlert(null);
-                setToast({ type: 'success', message: `${action} command sent to all stations.` });
+                try {
+                    const response = await apiFetch("/api/admin/computers/broadcast", {
+                        method: "POST",
+                        user,
+                        headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ command: ({ logout: 'LOCK', restart: 'REBOOT', shutdown: 'SHUTDOWN' })[action.toLowerCase()] })
+                    });
+
+                    if (response.ok) {
+                        const data = await response.json();
+                        setToast({ type: 'success', message: `Batch ${action} sent to ${data.delivered_count || 0} active stations.` });
+                    } else {
+                        setToast({ type: 'error', message: `Failed to broadcast ${action}` });
+                    }
+                } catch {
+                    setToast({ type: 'error', message: "Network error sending batch command" });
+                }
             }
         });
     };
@@ -102,24 +131,28 @@ function AdminComputerManagement() {
             onConfirm: async () => {
                 try {
                     console.log(`Sending ${action} to ${id}`);
-                    const baseUrl = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
-                        ? 'http://localhost:8000'
-                        : `http://${window.location.hostname}:8000`;
+                    const cmdMap = {
+                        'restart': 'REBOOT',
+                        'shutdown': 'SHUTDOWN',
+                        'logout': 'LOCK',
+                        'lock': 'LOCK',
+                        'unlock': 'UNLOCK',
+                        'reboot': 'REBOOT'
+                    };
+                    const mappedCommand = cmdMap[action.toLowerCase()] || action.toUpperCase();
 
-                    const response = await fetch(`${baseUrl}/api/admin/computers/${id}/command`, {
+                    const response = await apiFetch(`/api/admin/computers/${id}/command`, {
                         method: "POST",
-                        headers: {
-                            "Content-Type": "application/json",
-                            "Authorization": `Bearer ${user.token}`
-                        },
-                        body: JSON.stringify({ command: action.toLowerCase() })
+                        user,
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ command: mappedCommand })
                     });
 
                     if (response.ok) {
                         setToast({ type: 'success', message: `Command ${action} sent successfully.` });
                     } else {
                         const err = await response.json();
-                        setToast({ type: 'error', message: `Failed: ${err.detail || 'Unknown error'}` });
+                        setToast({ type: 'error', message: `Failed: ${err.error || err.detail || 'Unknown error'}` });
                     }
                 } catch (error) {
                     console.error("Error sending command:", error);
@@ -132,20 +165,22 @@ function AdminComputerManagement() {
 
     const handleDeleteComputer = async (id) => {
         setAlert({
-            title: "Delete Station?",
-            message: "Are you sure you want to delete this station? This cannot be undone.",
+            title: "Deactivate Station?",
+            message: "The station will be hidden while its usage history is kept. Cancel any active booking first.",
             type: 'danger',
             onConfirm: async () => {
                 try {
-                    const baseUrl = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
-                        ? 'http://localhost:8000'
-                        : `http://${window.location.hostname}:8000`;
-
-                    const response = await fetch(`${baseUrl}/computers/${id}`, {
+                    const response = await apiFetch(`/computers/${id}`, {
                         method: "DELETE",
-                        headers: { "Authorization": `Bearer ${user.token}` }
+                        user
                     });
-                    if (response.ok) fetchComputers();
+                    if (response.ok) {
+                        setToast({ type: 'success', message: "Station deactivated" });
+                        await fetchComputers();
+                    } else {
+                        const data = await response.json().catch(() => ({}));
+                        setToast({ type: 'error', message: data.error || "Failed to deactivate station" });
+                    }
                 } catch (error) {
                     console.error("Error deleting:", error);
                 }
@@ -158,7 +193,7 @@ function AdminComputerManagement() {
     const total = computers.length;
     const offline = computers.filter(c => !c.is_online).length;
     const available = computers.filter(c => c.is_online && c.status === 'available').length;
-    const inUse = computers.filter(c => c.is_online && (c.status === 'in-use' || c.status === 'occupied')).length;
+    const inUse = computers.filter(c => c.is_online && (c.status === 'in_use' || c.status === 'in-use')).length;
 
     // ... exist code ...
 
@@ -184,6 +219,43 @@ function AdminComputerManagement() {
                         <div className="grid grid-cols-2 gap-3">
                             <button onClick={() => setAlert(null)} className="py-2.5 rounded-xl font-bold text-slate-500 hover:bg-slate-100">Cancel</button>
                             <button onClick={alert.onConfirm} className={`py-2.5 rounded-xl font-bold text-white shadow-lg ${alert.type === 'danger' ? 'bg-red-500 hover:bg-red-600' : 'bg-orange-500 hover:bg-orange-600'}`}>Confirm</button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {isAddModalOpen && (
+                <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+                    <form onSubmit={handleAddComputer} className="bg-white rounded-2xl p-6 w-full max-w-sm shadow-2xl">
+                        <h2 className="text-lg font-bold text-slate-800 mb-2">Add Station</h2>
+                        <p className="text-sm text-slate-500 mb-4">Create a station first, then configure its agent with the one-time secret.</p>
+                        <label className="block text-sm font-medium text-slate-600 mb-1" htmlFor="station-name">Station name</label>
+                        <input id="station-name" autoFocus required maxLength={50} value={newComputerName} onChange={e => setNewComputerName(e.target.value)} className="w-full border rounded-lg px-3 py-2 mb-5" />
+                        <div className="flex justify-end gap-2">
+                            <button type="button" onClick={() => setIsAddModalOpen(false)} className="px-4 py-2 rounded-lg text-slate-600">Cancel</button>
+                            <button type="submit" className="px-4 py-2 rounded-lg bg-violet-600 text-white font-bold">Create</button>
+                        </div>
+                    </form>
+                </div>
+            )}
+
+            {provisionedAgent && (
+                <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+                    <div className="bg-white rounded-2xl p-6 w-full max-w-lg shadow-2xl">
+                        <h2 className="text-lg font-bold text-slate-800">Save this agent secret</h2>
+                        <p className="text-sm text-amber-700 bg-amber-50 border border-amber-100 rounded-lg p-3 my-3">Shown once. Put it in this station's <code>config.json</code>; rotating it disconnects the current agent.</p>
+                        <label className="block text-xs font-bold text-slate-500 mb-1" htmlFor="agent-secret">{provisionedAgent.name}</label>
+                        <input id="agent-secret" readOnly value={provisionedAgent.secret} onFocus={e => e.target.select()} className="w-full border rounded-lg px-3 py-2 font-mono text-sm" />
+                        <div className="flex justify-end gap-2 mt-4">
+                            <button onClick={async () => {
+                                try {
+                                    await navigator.clipboard.writeText(provisionedAgent.secret);
+                                    setToast({ type: 'success', message: "Agent secret copied" });
+                                } catch {
+                                    setToast({ type: 'error', message: "Select the secret field and copy it manually" });
+                                }
+                            }} className="px-4 py-2 rounded-lg border font-bold">Copy</button>
+                            <button onClick={() => setProvisionedAgent(null)} className="px-4 py-2 rounded-lg bg-violet-600 text-white font-bold">Done</button>
                         </div>
                     </div>
                 </div>
@@ -225,13 +297,11 @@ function AdminComputerManagement() {
                                 onClick={() => {
                                     setIsUpdating(true);
                                     const newStatus = selectedComputer.status === 'available' ? 'maintenance' : 'available';
-                                    const baseUrl = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
-                                        ? 'http://localhost:8000'
-                                        : `http://${window.location.hostname}:8000`;
 
-                                    fetch(`${baseUrl}/computers/${selectedComputer.id}`, {
+                                    apiFetch(`/computers/${selectedComputer.id}`, {
                                         method: 'PUT',
-                                        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${user.token}` },
+                                        user,
+                                        headers: { 'Content-Type': 'application/json' },
                                         body: JSON.stringify({ status: newStatus })
                                     }).then(async (res) => {
                                         if (res.ok) {
@@ -246,7 +316,16 @@ function AdminComputerManagement() {
                                 <span className="font-bold text-sm">{selectedComputer.status === 'available' ? 'Set Maintenance' : 'Set Available'}</span>
                             </button>
 
-                            {/* Delete */}
+                            <button
+                                disabled={isUpdating}
+                                onClick={() => handleRotateAgentSecret(selectedComputer)}
+                                className="p-4 rounded-xl border-2 border-violet-100 bg-violet-50 text-violet-700 hover:bg-violet-100 flex flex-col items-center gap-2 transition-all"
+                            >
+                                <span className="material-symbols-outlined text-3xl">key</span>
+                                <span className="font-bold text-sm">{selectedComputer.agent_key_configured ? 'Rotate Agent Secret' : 'Create Agent Secret'}</span>
+                            </button>
+
+                            {/* Deactivate */}
                             <button
                                 disabled={isUpdating}
                                 onClick={() => {
@@ -255,8 +334,8 @@ function AdminComputerManagement() {
                                 }}
                                 className="p-4 rounded-xl border-2 border-rose-100 bg-rose-50 text-rose-500 hover:bg-rose-100 hover:border-rose-200 flex flex-col items-center gap-2 transition-all"
                             >
-                                <span className="material-symbols-outlined text-3xl">delete</span>
-                                <span className="font-bold text-sm">Delete Station</span>
+                                <span className="material-symbols-outlined text-3xl">archive</span>
+                                <span className="font-bold text-sm">Deactivate Station</span>
                             </button>
                         </div>
 
@@ -268,11 +347,6 @@ function AdminComputerManagement() {
                                     <button onClick={() => { setSelectedComputer(null); handleRemoteAction(selectedComputer.id, 'Restart', selectedComputer.name); }} className="flex-1 py-2.5 bg-white border border-slate-200 rounded-lg text-orange-600 font-bold text-xs hover:border-orange-200 hover:bg-orange-50 hover:-translate-y-0.5 transition-all">Restart</button>
                                     <button onClick={() => { setSelectedComputer(null); handleRemoteAction(selectedComputer.id, 'Shutdown', selectedComputer.name); }} className="flex-1 py-2.5 bg-white border border-slate-200 rounded-lg text-red-600 font-bold text-xs hover:border-red-200 hover:bg-red-50 hover:-translate-y-0.5 transition-all">Shutdown</button>
                                 </div>
-                                <div className="flex justify-between gap-3 mt-3">
-                                    <button onClick={() => { setSelectedComputer(null); handleRemoteAction(selectedComputer.id, 'Update', selectedComputer.name); }} className="flex-1 py-2.5 bg-purple-50 border border-purple-200 rounded-lg text-purple-700 font-bold text-xs hover:border-purple-300 hover:bg-purple-100 hover:-translate-y-0.5 transition-all flex items-center justify-center gap-1">
-                                        <span className="material-symbols-outlined text-sm">system_update</span> Push Update
-                                    </button>
-                                </div>
                             </div>
                         )}
                     </div>
@@ -282,8 +356,14 @@ function AdminComputerManagement() {
             <header className="h-16 border-b border-slate-200 bg-white/80 backdrop-blur-md sticky top-0 z-30 px-8 flex items-center justify-between shrink-0">
                 <h1 className="text-lg font-bold text-slate-800">Computer Management</h1>
 
-                {/* Batch Actions Toolbar (Replaces Add Button as requested) */}
+                {/* Batch Actions & Add Toolbar */}
                 <div className="flex gap-2">
+                    <button
+                        onClick={() => setIsAddModalOpen(true)}
+                        className="bg-[#7c3aed] hover:bg-[#6d28d9] text-white px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all shadow-sm shadow-purple-200"
+                    >
+                        <span className="material-symbols-outlined text-sm">add</span> Add Station
+                    </button>
                     <button onClick={() => handleBatchAction('Logout')} className="bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all">
                         <span className="material-symbols-outlined text-sm">logout</span> Logout All
                     </button>
@@ -319,6 +399,23 @@ function AdminComputerManagement() {
                 {/* Stations Grid */}
                 {loading ? (
                     <div className="flex justify-center p-12"><div className="w-8 h-8 rounded-full border-4 border-slate-200 border-t-purple-500 animate-spin"></div></div>
+                ) : computers.length === 0 ? (
+                    <div className="bg-white rounded-2xl border border-slate-200 p-12 text-center max-w-lg mx-auto my-8">
+                        <div className="w-16 h-16 rounded-2xl bg-purple-50 text-[#7c3aed] flex items-center justify-center mx-auto mb-4">
+                            <span className="material-symbols-outlined text-3xl">desktop_windows</span>
+                        </div>
+                        <h3 className="text-lg font-bold text-slate-800 mb-1">ยังไม่มีเครื่องในระบบ (No Stations Registered)</h3>
+                        <p className="text-xs text-slate-500 mb-6">
+                            เมื่อเครื่องลูกข่ายเปิดรันโปรแกรม Client Agent หรือเมื่อกด "Add Station" เครื่องจะเชื่อมต่อและแสดงขึ้นมาในหน้านี้โดยอัตโนมัติ
+                        </p>
+                        <button
+                            onClick={() => setIsAddModalOpen(true)}
+                            className="bg-[#7c3aed] hover:bg-[#6d28d9] text-white px-5 py-2.5 rounded-xl text-xs font-bold shadow-md shadow-purple-200 transition-all inline-flex items-center gap-2"
+                        >
+                            <span className="material-symbols-outlined text-sm">add</span>
+                            เพิ่มเครื่องด้วยตนเอง (Add Station)
+                        </button>
+                    </div>
                 ) : (
                     <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-4">
                         {computers.map((comp) => {
@@ -330,7 +427,7 @@ function AdminComputerManagement() {
 
                             if (comp.is_online) {
                                 cardStyle = ''; // Active
-                                if (comp.status === 'in-use' || comp.status === 'occupied') {
+                                if (comp.status === 'in_use' || comp.status === 'in-use' || comp.status === 'occupied') {
                                     displayStatus = 'in-use';
                                     statusColor = 'bg-blue-500';
                                     iconColor = 'text-blue-600 bg-blue-100';

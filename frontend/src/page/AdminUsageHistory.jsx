@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../App';
+import { apiFetch } from '../api';
+import { toCSV } from '../csv';
 
 function AdminUsageHistory() {
     const { user } = useAuth();
@@ -9,9 +11,7 @@ function AdminUsageHistory() {
     useEffect(() => {
         const fetchBookings = async () => {
             try {
-                const response = await fetch("http://localhost:8000/admin/bookings", {
-                    headers: { "Authorization": `Bearer ${user.token}` }
-                });
+                const response = await apiFetch("/admin/bookings");
                 if (response.ok) {
                     const data = await response.json();
                     setBookings(data);
@@ -28,6 +28,19 @@ function AdminUsageHistory() {
         }
     }, [user]);
 
+    const exportCSV = () => {
+        if (!bookings || bookings.length === 0) return;
+        const rows = bookings.map(b => [b.id, b.user_name || b.user_id, b.computer_name || b.computer_id, b.start_time, b.end_time || '-', b.status]);
+        const blob = new Blob([toCSV(["Session ID", "User", "Computer", "Start Time", "End Time", "Status"], rows)], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.setAttribute("href", url);
+        link.setAttribute("download", `usage_history_${new Date().toISOString().slice(0,10)}.csv`);
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    };
+
     const formatDate = (dateString) => {
         return new Date(dateString).toLocaleString('en-US', {
             dateStyle: 'medium',
@@ -40,11 +53,10 @@ function AdminUsageHistory() {
             <header className="h-16 border-b border-slate-200 bg-white/80 backdrop-blur-md sticky top-0 z-30 px-8 flex items-center justify-between shrink-0">
                 <h1 className="text-lg font-bold text-slate-800">Usage History</h1>
                 <div className="flex gap-2">
-                    <button className="bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 transition-all">
-                        <span className="material-symbols-outlined text-lg">calendar_today</span>
-                        <span>Select Date Range</span>
-                    </button>
-                    <button className="bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 transition-all">
+                    <button
+                        onClick={exportCSV}
+                        className="bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 transition-all"
+                    >
                         <span className="material-symbols-outlined text-lg">download</span>
                         <span>Export CSV</span>
                     </button>
@@ -68,18 +80,18 @@ function AdminUsageHistory() {
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-slate-100 bg-white/50">
-                                {bookings.length === 0 ? (
+                                {(!bookings || bookings.length === 0) ? (
                                     <tr><td colSpan="6" className="p-8 text-center text-slate-500">No history found.</td></tr>
                                 ) : bookings.map((booking, i) => (
                                     <tr key={i} className="hover:bg-purple-50/50 transition-colors">
                                         <td className="p-4 pl-6 font-mono text-xs text-slate-400">#{booking.id}</td>
                                         <td className="p-4 font-bold text-slate-700 text-sm">
-                                            {booking.user ? (booking.user.full_name || booking.user.username) : `User-${booking.user_id}`}
+                                            {booking.user_name || (booking.user ? (booking.user.full_name || booking.user.username) : `User #${booking.user_id}`)}
                                         </td>
                                         <td className="p-4 text-sm text-slate-600">
                                             <div className="flex items-center gap-2">
                                                 <span className="material-symbols-outlined text-sm text-slate-400">desktop_windows</span>
-                                                {booking.computer ? booking.computer.name : `Comp-${booking.computer_id}`}
+                                                {booking.computer_name || (booking.computer ? booking.computer.name : `COM-${booking.computer_id}`)}
                                             </div>
                                         </td>
                                         <td className="p-4 text-sm text-slate-600">{formatDate(booking.start_time)}</td>

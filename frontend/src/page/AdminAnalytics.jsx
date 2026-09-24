@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../App';
+import { apiFetch } from '../api';
 
 function AdminAnalytics() {
     const { user } = useAuth();
@@ -13,9 +14,7 @@ function AdminAnalytics() {
     useEffect(() => {
         const fetchStats = async () => {
             try {
-                const response = await fetch("http://localhost:8000/dashboard/stats", {
-                    headers: { "Authorization": `Bearer ${user.token}` }
-                });
+                const response = await apiFetch("/dashboard/stats");
                 if (response.ok) {
                     const data = await response.json();
                     setStats(data);

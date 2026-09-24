@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../App';
+import { apiFetch } from '../api';
 const Toast = ({ message, type, onClose }) => {
     useEffect(() => { const timer = setTimeout(onClose, 3000); return () => clearTimeout(timer); }, [onClose]);
     const bgClass = type === 'success' ? 'bg-emerald-50 border-emerald-200 text-emerald-800' : 'bg-rose-50 border-rose-200 text-rose-800';
@@ -11,6 +12,8 @@ const Toast = ({ message, type, onClose }) => {
     );
 };
 
+const PAGE_SIZE = 25;
+
 function AdminUserManagement() {
     const { user } = useAuth();
     const [toast, setToast] = useState(null);
@@ -21,20 +24,18 @@ function AdminUserManagement() {
     useEffect(() => {
         const fetchUsers = async () => {
             try {
-                const response = await fetch("http://localhost:8000/users", {
-                    method: "GET",
-                    headers: {
-                        "Authorization": `Bearer ${user?.token}`, // ส่ง Token ไปด้วย
-                        "Content-Type": "application/json"
-                    }
-                });
+                const response = await apiFetch("/users", { user });
 
                 if (!response.ok) {
-                    throw new Error("Failed to fetch users");
+                    let errMsg = "Failed to fetch users";
+                    const errData = await response.json().catch(() => null);
+                    if (errData && errData.error) errMsg = errData.error;
+                    throw new Error(errMsg);
                 }
 
                 const data = await response.json();
                 setUsers(data);
+                setError(null);
             } catch (err) {
                 console.error("Error fetching users:", err);
                 setError(err.message);
@@ -43,7 +44,7 @@ function AdminUserManagement() {
             }
         };
 
-        if (user && user.token) {
+        if (user) {
             fetchUsers();
         }
     }, [user]);
@@ -51,19 +52,104 @@ function AdminUserManagement() {
     const [editingUser, setEditingUser] = useState({ id: null, role: '', department: '' });
     const [roleDropdownOpen, setRoleDropdownOpen] = useState(false);
 
+    const [newUserModalOpen, setNewUserModalOpen] = useState(false);
+    const [newUserData, setNewUserData] = useState({ username: '', password: '', full_name: '', role: 'student', department: '' });
+    const [searchQuery, setSearchQuery] = useState('');
+    const [page, setPage] = useState(1);
+
+    const handleCreateUser = async (e) => {
+        e.preventDefault();
+        try {
+            const response = await apiFetch("/admin/users", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(newUserData)
+            });
+            if (response.ok) {
+                setToast({ type: 'success', message: "User registered successfully!" });
+                setNewUserModalOpen(false);
+                setNewUserData({ username: '', password: '', full_name: '', role: 'student', department: '' });
+                // Re-fetch users
+                const res = await apiFetch("/users");
+                if (res.ok) setUsers(await res.json());
+            } else {
+                const errData = await response.json();
+                setToast({ type: 'error', message: errData.error || "Failed to create user" });
+            }
+        } catch {
+            setToast({ type: 'error', message: "Network error creating user" });
+        }
+    };
+
+    const handleDeleteUser = async (userId, username) => {
+        if (!window.confirm(`Are you sure you want to deactivate user @${username}?`)) return;
+        try {
+            const response = await apiFetch(`/admin/users/${userId}`, {
+                method: "DELETE"
+            });
+            if (response.ok) {
+                setToast({ type: 'success', message: "User deactivated successfully" });
+                setUsers(users.filter(u => u.id !== userId));
+            } else {
+                const errData = await response.json();
+                setToast({ type: 'error', message: errData.error || "Failed to delete user" });
+            }
+        } catch {
+            setToast({ type: 'error', message: "Error deleting user" });
+        }
+    };
+
+    const filteredUsers = users.filter(u => {
+        if (!searchQuery) return true;
+        const q = searchQuery.toLowerCase();
+        return (u.username && u.username.toLowerCase().includes(q)) ||
+               (u.full_name && u.full_name.toLowerCase().includes(q)) ||
+               (u.department && u.department.toLowerCase().includes(q)) ||
+               String(u.id).includes(q);
+    });
+    const totalPages = Math.max(1, Math.ceil(filteredUsers.length / PAGE_SIZE));
+    const currentPage = Math.min(page, totalPages);
+    const visibleUsers = filteredUsers.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+    const [resetPwdModal, setResetPwdModal] = useState({ open: false, userId: null, username: '', newPassword: '' });
+
+    const handleResetPassword = async (e) => {
+        e.preventDefault();
+        if (!resetPwdModal.newPassword || resetPwdModal.newPassword.length < 8) {
+            setToast({ type: 'error', message: "Password must be at least 8 characters" });
+            return;
+        }
+        try {
+            const response = await apiFetch(`/admin/users/${resetPwdModal.userId}/reset-password`, {
+                method: "PUT",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({ new_password: resetPwdModal.newPassword })
+            });
+            if (response.ok) {
+                setToast({ type: 'success', message: `Password for @${resetPwdModal.username} reset successfully!` });
+                setResetPwdModal({ open: false, userId: null, username: '', newPassword: '' });
+            } else {
+                const err = await response.json();
+                setToast({ type: 'error', message: err.error || "Failed to reset password" });
+            }
+        } catch {
+            setToast({ type: 'error', message: "Network error resetting password" });
+        }
+    };
+
     const roles = [
         { value: 'admin', label: 'Admin' },
         { value: 'executive', label: 'Executive' },
         { value: 'staff', label: 'Staff' },
-        { value: 'user', label: 'User' }
+        { value: 'student', label: 'Student / User' }
     ];
 
     const saveUser = async (userId) => {
         try {
-            const response = await fetch(`http://localhost:8000/admin/users/${userId}/info`, {
+            const response = await apiFetch(`/admin/users/${userId}/info`, {
                 method: "PUT",
                 headers: {
-                    "Authorization": `Bearer ${user?.token}`,
                     "Content-Type": "application/json"
                 },
                 body: JSON.stringify({ role: editingUser.role, department: editingUser.department })
@@ -76,7 +162,7 @@ function AdminUserManagement() {
             } else {
                 setToast({ type: 'error', message: "Failed to update user" });
             }
-        } catch (err) {
+        } catch {
             setToast({ type: 'error', message: "Error updating user" });
         }
     };
@@ -90,11 +176,125 @@ function AdminUserManagement() {
 
             <header className="h-16 border-b border-slate-200 bg-white/80 backdrop-blur-md sticky top-0 z-30 px-8 flex items-center justify-between shrink-0">
                 <h1 className="text-lg font-bold text-slate-800">User Management</h1>
-                <button className="bg-[#7c3aed] hover:bg-[#6d28d9] text-white px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 transition-all shadow-md shadow-purple-200">
+                <button
+                    onClick={() => setNewUserModalOpen(true)}
+                    className="bg-[#7c3aed] hover:bg-[#6d28d9] text-white px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 transition-all shadow-md shadow-purple-200"
+                >
                     <span className="material-symbols-outlined text-lg">add</span>
                     <span>Add New User</span>
                 </button>
             </header>
+
+            {/* Modal Add User */}
+            {newUserModalOpen && (
+                <div className="fixed inset-0 z-[150] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+                    <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-2xl border">
+                        <div className="flex items-center justify-between mb-4 pb-2 border-b">
+                            <h3 className="text-lg font-bold text-slate-800">Add New User</h3>
+                            <button onClick={() => setNewUserModalOpen(false)} className="text-slate-400 hover:text-slate-600">
+                                <span className="material-symbols-outlined">close</span>
+                            </button>
+                        </div>
+                        <form onSubmit={handleCreateUser} className="space-y-4">
+                            <div>
+                                <label className="block text-xs font-bold text-slate-600 uppercase mb-1">Username</label>
+                                <input
+                                    type="text" required
+                                    value={newUserData.username}
+                                    onChange={(e) => setNewUserData({...newUserData, username: e.target.value})}
+                                    className="w-full bg-slate-50 border rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-purple-200"
+                                    placeholder="e.g. user02"
+                                />
+                            </div>
+                            <div>
+                                <label className="block text-xs font-bold text-slate-600 uppercase mb-1">Password</label>
+                                <input
+                                    type="password" required
+                                    value={newUserData.password}
+                                    onChange={(e) => setNewUserData({...newUserData, password: e.target.value})}
+                                    className="w-full bg-slate-50 border rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-purple-200"
+                                    placeholder="At least 8 characters"
+                                    minLength={8}
+                                />
+                            </div>
+                            <div>
+                                <label className="block text-xs font-bold text-slate-600 uppercase mb-1">Full Name</label>
+                                <input
+                                    type="text" required
+                                    value={newUserData.full_name}
+                                    onChange={(e) => setNewUserData({...newUserData, full_name: e.target.value})}
+                                    className="w-full bg-slate-50 border rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-purple-200"
+                                    placeholder="e.g. John Doe"
+                                />
+                            </div>
+                            <div className="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label className="block text-xs font-bold text-slate-600 uppercase mb-1">Role</label>
+                                    <select
+                                        value={newUserData.role}
+                                        onChange={(e) => setNewUserData({...newUserData, role: e.target.value})}
+                                        className="w-full bg-slate-50 border rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-purple-200"
+                                    >
+                                        <option value="student">Student / User</option>
+                                        <option value="staff">Staff</option>
+                                        <option value="executive">Executive</option>
+                                        <option value="admin">Admin</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-bold text-slate-600 uppercase mb-1">Department</label>
+                                    <input
+                                        type="text"
+                                        value={newUserData.department}
+                                        onChange={(e) => setNewUserData({...newUserData, department: e.target.value})}
+                                        className="w-full bg-slate-50 border rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-purple-200"
+                                        placeholder="e.g. Science"
+                                    />
+                                </div>
+                            </div>
+                            <div className="flex justify-end gap-2 pt-4 border-t">
+                                <button type="button" onClick={() => setNewUserModalOpen(false)} className="px-4 py-2 rounded-lg text-sm font-bold text-slate-500 hover:bg-slate-100">Cancel</button>
+                                <button type="submit" className="px-4 py-2 rounded-lg text-sm font-bold text-white bg-[#7c3aed] hover:bg-[#6d28d9]">Create User</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            )}
+
+            {/* Modal Reset Password */}
+            {resetPwdModal.open && (
+                <div className="fixed inset-0 z-[150] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-zoom-in">
+                    <div className="bg-white rounded-2xl p-6 w-full max-w-sm shadow-2xl border">
+                        <div className="flex items-center justify-between mb-4 pb-2 border-b">
+                            <h3 className="text-lg font-bold text-slate-800">Reset Password</h3>
+                            <button onClick={() => setResetPwdModal({ open: false, userId: null, username: '', newPassword: '' })} className="text-slate-400 hover:text-slate-600">
+                                <span className="material-symbols-outlined">close</span>
+                            </button>
+                        </div>
+                        <form onSubmit={handleResetPassword} className="space-y-4">
+                            <p className="text-xs text-slate-500">
+                                Setting new password for user: <span className="font-bold text-slate-800">@{resetPwdModal.username}</span>
+                            </p>
+                            <div>
+                                <label className="block text-xs font-bold text-slate-600 uppercase mb-1">New Password</label>
+                                <input
+                                    type="password" required
+                                    value={resetPwdModal.newPassword}
+                                    onChange={(e) => setResetPwdModal({...resetPwdModal, newPassword: e.target.value})}
+                                    className="w-full bg-slate-50 border rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-purple-200"
+                                    placeholder="At least 8 characters"
+                                    minLength={8}
+                                    autoFocus
+                                />
+                            </div>
+                            <div className="flex justify-end gap-2 pt-3 border-t">
+                                <button type="button" onClick={() => setResetPwdModal({ open: false, userId: null, username: '', newPassword: '' })} className="px-4 py-2 rounded-lg text-sm font-bold text-slate-500 hover:bg-slate-100">Cancel</button>
+                                <button type="submit" className="px-4 py-2 rounded-lg text-sm font-bold text-white bg-amber-500 hover:bg-amber-600">Reset Password</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            )}
 
             <div className="flex-1 overflow-y-auto custom-scrollbar p-8">
                 <div className="glass-card rounded-2xl border border-slate-100 overflow-hidden shadow-sm">
@@ -104,6 +304,8 @@ function AdminUserManagement() {
                             <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-lg">search</span>
                             <input
                                 type="text"
+                                value={searchQuery}
+                                onChange={(e) => { setSearchQuery(e.target.value); setPage(1); }}
                                 className="pl-10 pr-4 py-2 bg-white border border-slate-200 rounded-lg text-sm w-full focus:ring-2 focus:ring-purple-200 focus:border-purple-300 transition-all outline-none"
                                 placeholder="Search users by name, username, or ID..."
                             />
@@ -143,14 +345,14 @@ function AdminUserManagement() {
                                     </tr>
                                 </thead>
                                 <tbody className="divide-y divide-slate-100 bg-white/50">
-                                    {users.length === 0 ? (
+                                    {filteredUsers.length === 0 ? (
                                         <tr>
                                             <td colSpan="5" className="p-8 text-center text-slate-500 text-sm">
                                                 No users found.
                                             </td>
                                         </tr>
                                     ) : (
-                                        users.map((userData, i) => (
+                                        visibleUsers.map((userData, i) => (
                                             <tr key={userData.id || i} className="hover:bg-purple-50/50 transition-colors group">
                                                 <td className="p-4 pl-6">
                                                     <div className="flex items-center gap-3">
@@ -235,10 +437,13 @@ function AdminUserManagement() {
                                                         </>
                                                     ) : (
                                                         <>
-                                                            <button onClick={() => setEditingUser({ id: userData.id, role: userData.role, department: userData.department || '' })} className="text-slate-400 hover:text-purple-600 p-1 rounded transition-colors opacity-0 group-hover:opacity-100" title="Edit User">
+                                                            <button onClick={() => setResetPwdModal({ open: true, userId: userData.id, username: userData.username, newPassword: '' })} className="text-slate-400 hover:text-amber-500 p-1 rounded transition-colors opacity-0 group-hover:opacity-100" title="Reset Password">
+                                                                <span className="material-symbols-outlined text-lg">key</span>
+                                                            </button>
+                                                            <button onClick={() => setEditingUser({ id: userData.id, role: userData.role, department: userData.department || '' })} className="text-slate-400 hover:text-purple-600 p-1 rounded transition-colors opacity-0 group-hover:opacity-100 ml-1" title="Edit User">
                                                                 <span className="material-symbols-outlined text-lg">edit</span>
                                                             </button>
-                                                            <button className="text-slate-400 hover:text-rose-500 p-1 rounded transition-colors opacity-0 group-hover:opacity-100 ml-1">
+                                                            <button onClick={() => handleDeleteUser(userData.id, userData.username)} className="text-slate-400 hover:text-rose-500 p-1 rounded transition-colors opacity-0 group-hover:opacity-100 ml-1" title="Deactivate User">
                                                                 <span className="material-symbols-outlined text-lg">delete</span>
                                                             </button>
                                                         </>
@@ -250,13 +455,12 @@ function AdminUserManagement() {
                                 </tbody>
                             </table>
 
-                            {/* Pagination (Mock UI for now) */}
                             <div className="p-4 border-t border-slate-100 bg-slate-50/50 text-xs text-slate-500 flex items-center justify-between font-medium">
-                                <span>Showing {users.length} users</span>
+                                <span>Showing {filteredUsers.length === 0 ? 0 : (currentPage - 1) * PAGE_SIZE + 1}–{Math.min(currentPage * PAGE_SIZE, filteredUsers.length)} of {filteredUsers.length} users</span>
                                 <div className="flex gap-1">
-                                    <button className="px-3 py-1 rounded bg-white border border-slate-200 hover:border-purple-300 hover:text-purple-600 transition-colors disabled:opacity-50">Prev</button>
-                                    <button className="px-3 py-1 rounded bg-[#7c3aed] text-white shadow-sm shadow-purple-200">1</button>
-                                    <button className="px-3 py-1 rounded bg-white border border-slate-200 hover:border-purple-300 hover:text-purple-600 transition-colors">Next</button>
+                                    <button type="button" onClick={() => setPage(currentPage - 1)} disabled={currentPage === 1} className="px-3 py-1 rounded bg-white border border-slate-200 hover:border-purple-300 hover:text-purple-600 transition-colors disabled:opacity-50">Prev</button>
+                                    <span className="px-3 py-1">{currentPage} / {totalPages}</span>
+                                    <button type="button" onClick={() => setPage(currentPage + 1)} disabled={currentPage === totalPages} className="px-3 py-1 rounded bg-white border border-slate-200 hover:border-purple-300 hover:text-purple-600 transition-colors disabled:opacity-50">Next</button>
                                 </div>
                             </div>
                         </>

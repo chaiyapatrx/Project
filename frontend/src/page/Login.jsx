@@ -1,7 +1,8 @@
 // src/page/Login.jsx
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useAuth } from '../App'; // ✅ 1. เพิ่มบรรทัดนี้ เพื่อเรียกใช้ระบบ Auth
+import { useAuth } from '../App';
+import { apiFetch } from '../api';
 
 const styles = `
   .glass-panel {
@@ -48,7 +49,7 @@ function Login() {
     const [currentIndex, setCurrentIndex] = useState(0);
 
     // --- State สำหรับ UI (Switch Mode) ---
-    const [isInternal, setIsInternal] = useState(true);
+    const isInternal = true;
 
     useEffect(() => {
         const timer = setInterval(() => {
@@ -63,32 +64,23 @@ function Login() {
         setErrorMsg("");
         setIsLoading(true);
 
-        // Determine Base URL: Check if Electron, otherwise localhost
-        let baseUrl = "http://localhost:8000";
         if (window.electronAPI) {
             try {
                 const config = await window.electronAPI.getConfig();
                 if (config && config.server_ip) {
-                    baseUrl = `http://${config.server_ip}:8000`;
+                    window.electronConfig = config;
                 }
             } catch (err) {
                 console.error("Failed to get config from Electron:", err);
             }
-        } else {
-            // Fallback or dev mode
-            const hostname = window.location.hostname;
-            if (hostname !== 'localhost') {
-                baseUrl = `http://${hostname}:8000`;
-            }
         }
-
 
         try {
             const formData = new FormData();
             formData.append('username', username);
             formData.append('password', password);
 
-            const response = await fetch(`${baseUrl}/token`, {
+            const response = await apiFetch("/api/auth/login", {
                 method: "POST",
                 body: formData,
             });
@@ -98,14 +90,10 @@ function Login() {
             }
 
             const data = await response.json();
-            const token = data.access_token;
+            const csrfToken = data.csrf_token;
 
             // 3. ดึงข้อมูล User จริงจาก Backend (/users/me) เพื่อเอา Role
-            const userResponse = await fetch(`${baseUrl}/users/me`, {
-                headers: {
-                    "Authorization": `Bearer ${token}`
-                }
-            });
+            const userResponse = await apiFetch("/users/me");
 
             if (!userResponse.ok) {
                 throw new Error("Failed to fetch user profile");
@@ -115,7 +103,7 @@ function Login() {
 
             const userData = {
                 username: userProfile.username,
-                token: token,
+                csrfToken: csrfToken, // for the double-submit CSRF header
                 role: userProfile.role, // ใช้ Role จริงจาก DB
                 full_name: userProfile.full_name,
                 id: userProfile.id
@@ -218,7 +206,7 @@ function Login() {
                                         </span>
                                         <input
                                             className="glass-input flex w-full min-w-0 rounded-lg text-slate-900 h-14 placeholder:text-slate-300 pl-12 pr-4 text-base font-normal transition-all focus:ring-4 focus:ring-[#7c3aed]/10"
-                                            placeholder={isInternal ? "Username (Try: admin)" : "Enter your partner access key"}
+                                            placeholder={isInternal ? "Username" : "Enter your partner access key"}
                                             type="text"
                                             required
                                             value={username}
@@ -251,25 +239,14 @@ function Login() {
                             {/* Buttons */}
                             <div className="flex flex-col sm:flex-row items-center gap-4 mt-4">
                                 <button
-                                    onClick={() => {
-                                        setIsInternal(!isInternal);
-                                        setErrorMsg("");
-                                    }}
-                                    className="w-full sm:flex-1 h-14 flex items-center justify-center rounded-lg border border-slate-200 text-slate-600 text-sm font-semibold hover:bg-slate-50 transition-all"
-                                    type="button"
-                                >
-                                    {isInternal ? 'External Access' : 'Back to Identity'}
-                                </button>
-
-                                <button
-                                    className="w-full sm:flex-1 h-14 flex items-center justify-center rounded-lg bg-[#7c3aed] text-white text-sm font-bold shadow-xl shadow-[#7c3aed]/25 hover:bg-[#6d28d9] active:scale-[0.98] transition-all disabled:opacity-70 disabled:cursor-not-allowed"
+                                    className="w-full h-14 flex items-center justify-center rounded-lg bg-[#7c3aed] text-white text-sm font-bold shadow-xl shadow-[#7c3aed]/25 hover:bg-[#6d28d9] active:scale-[0.98] transition-all disabled:opacity-70 disabled:cursor-not-allowed"
                                     type="submit"
                                     disabled={isLoading}
                                 >
                                     {isLoading ? (
                                         <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
                                     ) : (
-                                        isInternal ? 'Login' : 'Authorize'
+                                        'Login'
                                     )}
                                 </button>
                             </div>

@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import { useAuth } from '../App';
+import { apiFetch } from '../api';
 
 const Toast = ({ message, type, onClose }) => {
     useEffect(() => { const timer = setTimeout(onClose, 3000); return () => clearTimeout(timer); }, [onClose]);
@@ -12,23 +14,59 @@ const Toast = ({ message, type, onClose }) => {
 };
 
 function AdminSettings() {
+    const { user } = useAuth();
     const [isLoading, setIsLoading] = useState(false);
     const [toast, setToast] = useState(null);
     const [settings, setSettings] = useState({
-        systemName: "AdminCore System",
-        timezone: "UTC+7 (Bangkok, Hanoi, Jakarta)",
         sessionDuration: 120,
-        guestLogin: false,
         maintenanceMode: false
     });
 
-    const handleSave = () => {
+    useEffect(() => {
+        const fetchSettings = async () => {
+            if (!user) return;
+            try {
+                const response = await apiFetch("/api/admin/settings");
+                if (response.ok) {
+                    const data = await response.json();
+                    setSettings({
+                        sessionDuration: parseInt(data.session_duration) || 120,
+                        maintenanceMode: data.maintenance_mode === "true"
+                    });
+                }
+            } catch (err) {
+                console.error("Failed to fetch settings:", err);
+            }
+        };
+        fetchSettings();
+    }, [user]);
+
+    const handleSave = async () => {
         setIsLoading(true);
-        // Simulate API Call
-        setTimeout(() => {
+        try {
+            const payload = {
+                session_duration: String(settings.sessionDuration),
+                maintenance_mode: String(settings.maintenanceMode)
+            };
+
+            const response = await apiFetch("/api/admin/settings", {
+                method: "PUT",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify(payload)
+            });
+
+            if (response.ok) {
+                setToast({ type: 'success', message: "Settings saved to MySQL database successfully!" });
+            } else {
+                setToast({ type: 'error', message: "Failed to update settings" });
+            }
+        } catch {
+            setToast({ type: 'error', message: "Network error saving settings" });
+        } finally {
             setIsLoading(false);
-            setToast({ type: 'success', message: "Settings saved successfully!" });
-        }, 1000);
+        }
     };
 
     return (
@@ -57,47 +95,24 @@ function AdminSettings() {
             <div className="flex-1 overflow-y-auto custom-scrollbar p-8">
                 <div className="max-w-4xl mx-auto space-y-8">
 
-                    {/* General Settings */}
+                    {/* Booking Rules */}
                     <div className="glass-card p-6 rounded-2xl shadow-sm">
                         <div className="flex items-center gap-3 mb-6 pb-4 border-b border-slate-100">
                             <div className="w-10 h-10 rounded-xl bg-purple-50 flex items-center justify-center text-[#7c3aed]">
                                 <span className="material-symbols-outlined">tune</span>
                             </div>
                             <div>
-                                <h3 className="font-bold text-slate-800">General Configuration</h3>
-                                <p className="text-xs text-slate-500">Basic system parameters and preferences</p>
+                                <h3 className="font-bold text-slate-800">Booking Rules</h3>
+                                <p className="text-xs text-slate-500">Set the maximum session duration</p>
                             </div>
                         </div>
 
                         <div className="space-y-4">
-                            <div className="grid grid-cols-2 gap-4">
-                                <div>
-                                    <label className="block text-xs font-bold text-slate-500 uppercase mb-1">System Name</label>
-                                    <input
-                                        type="text"
-                                        value={settings.systemName}
-                                        onChange={(e) => setSettings({ ...settings, systemName: e.target.value })}
-                                        className="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-2 text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-purple-200 transaction-all"
-                                    />
-                                </div>
-                                <div>
-                                    <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Timezone</label>
-                                    <select
-                                        value={settings.timezone}
-                                        onChange={(e) => setSettings({ ...settings, timezone: e.target.value })}
-                                        className="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-2 text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-purple-200 transaction-all"
-                                    >
-                                        <option>UTC+7 (Bangkok, Hanoi, Jakarta)</option>
-                                        <option>UTC+0 (London)</option>
-                                        <option>UTC-5 (New York)</option>
-                                    </select>
-                                </div>
-                            </div>
-
                             <div>
-                                <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Max Session Duration (Minutes)</label>
+                                <label htmlFor="session-duration" className="block text-xs font-bold text-slate-500 uppercase mb-1">Max Session Duration (Minutes)</label>
                                 <div className="flex items-center gap-4">
                                     <input
+                                        id="session-duration"
                                         type="range" min="30" max="240" step="30"
                                         value={settings.sessionDuration}
                                         onChange={(e) => setSettings({ ...settings, sessionDuration: e.target.value })}
@@ -124,54 +139,22 @@ function AdminSettings() {
                         <div className="space-y-4">
                             <div className="flex items-center justify-between p-4 bg-slate-50 rounded-xl border border-slate-100">
                                 <div>
-                                    <p className="font-bold text-slate-700 text-sm">Guest Login Allowed</p>
-                                    <p className="text-xs text-slate-500">Allow users to login without university credentials</p>
-                                </div>
-                                <div
-                                    onClick={() => setSettings({ ...settings, guestLogin: !settings.guestLogin })}
-                                    className={`w-12 h-6 rounded-full relative cursor-pointer transition-colors ${settings.guestLogin ? 'bg-[#7c3aed]' : 'bg-slate-300'}`}
-                                >
-                                    <div className={`absolute top-1 w-4 h-4 bg-white rounded-full shadow-sm transition-all ${settings.guestLogin ? 'right-1' : 'left-1'}`}></div>
-                                </div>
-                            </div>
-
-                            <div className="flex items-center justify-between p-4 bg-slate-50 rounded-xl border border-slate-100">
-                                <div>
                                     <p className="font-bold text-slate-700 text-sm">Maintenance Mode</p>
                                     <p className="text-xs text-slate-500">Disable all stations for booking (Admin only access)</p>
                                 </div>
-                                <div
+                                <button
+                                    type="button"
+                                    role="switch"
+                                    aria-checked={settings.maintenanceMode}
+                                    aria-label="Maintenance mode"
                                     onClick={() => setSettings({ ...settings, maintenanceMode: !settings.maintenanceMode })}
-                                    className={`w-12 h-6 rounded-full relative cursor-pointer transition-colors ${settings.maintenanceMode ? 'bg-orange-500' : 'bg-slate-300'}`}
+                                    className={`w-12 h-6 border-0 rounded-full relative cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 ${settings.maintenanceMode ? 'bg-orange-500' : 'bg-slate-300'}`}
                                 >
                                     <div className={`absolute top-1 w-4 h-4 bg-white rounded-full shadow-sm transition-all ${settings.maintenanceMode ? 'right-1' : 'left-1'}`}></div>
-                                </div>
+                                </button>
                             </div>
                         </div>
                     </div>
-
-                    {/* Notifications */}
-                    <div className="glass-card p-6 rounded-2xl shadow-sm">
-                        <div className="flex items-center gap-3 mb-6 pb-4 border-b border-slate-100">
-                            <div className="w-10 h-10 rounded-xl bg-amber-50 flex items-center justify-center text-amber-500">
-                                <span className="material-symbols-outlined">notifications</span>
-                            </div>
-                            <div>
-                                <h3 className="font-bold text-slate-800">Notifications</h3>
-                                <p className="text-xs text-slate-500">Email and system alerts</p>
-                            </div>
-                        </div>
-
-                        <div className="space-y-3">
-                            {['System Errors & Warnings', 'Daily Usage Reports', 'New User Registration Alert'].map((item, i) => (
-                                <label key={i} className="flex items-center gap-3 cursor-pointer">
-                                    <input type="checkbox" defaultChecked className="w-4 h-4 accent-[#7c3aed] rounded" />
-                                    <span className="text-sm font-medium text-slate-600">{item}</span>
-                                </label>
-                            ))}
-                        </div>
-                    </div>
-
                 </div>
             </div>
         </div>

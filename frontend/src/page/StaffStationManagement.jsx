@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../App';
+import { apiFetch } from '../api';
 
 const Toast = ({ message, type, onClose }) => {
     useEffect(() => { const timer = setTimeout(onClose, 3000); return () => clearTimeout(timer); }, [onClose]);
@@ -20,15 +21,9 @@ function StaffStationManagement() {
     const [toast, setToast] = useState(null);
     const [alert, setAlert] = useState(null);
 
-    const fetchStations = async () => {
+    const fetchStations = useCallback(async () => {
         try {
-            const baseUrl = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
-                ? 'http://localhost:8000'
-                : `http://${window.location.hostname}:8000`;
-
-            const response = await fetch(`${baseUrl}/computers`, {
-                headers: { "Authorization": `Bearer ${user.token}` }
-            });
+            const response = await apiFetch("/admin/computers", { user });
             if (response.ok) {
                 const data = await response.json();
                 setStations(data);
@@ -38,7 +33,7 @@ function StaffStationManagement() {
         } finally {
             setLoading(false);
         }
-    };
+    }, [user]);
 
     useEffect(() => {
         if (user) {
@@ -47,7 +42,7 @@ function StaffStationManagement() {
             const interval = setInterval(fetchStations, 5000);
             return () => clearInterval(interval);
         }
-    }, [user]);
+    }, [user, fetchStations]);
 
     const handleRemoteAction = async (id, action, name) => {
         setAlert({
@@ -57,21 +52,28 @@ function StaffStationManagement() {
             onConfirm: async () => {
                 setAlert(null);
                 try {
-                    const baseUrl = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
-                        ? 'http://localhost:8000'
-                        : `http://${window.location.hostname}:8000`;
+                    const cmdMap = {
+                        'restart': 'REBOOT',
+                        'shutdown': 'SHUTDOWN',
+                        'logout': 'LOCK',
+                        'lock': 'LOCK',
+                        'unlock': 'UNLOCK',
+                        'reboot': 'REBOOT'
+                    };
+                    const mappedCommand = cmdMap[action.toLowerCase()] || action.toUpperCase();
 
-                    const response = await fetch(`${baseUrl}/api/admin/computers/${id}/command`, {
+                    const response = await apiFetch(`/api/admin/computers/${id}/command`, {
                         method: "POST",
-                        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${user.token}` },
-                        body: JSON.stringify({ command: action.toLowerCase() })
+                        user,
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ command: mappedCommand })
                     });
 
                     if (response.ok) {
                         setToast({ type: 'success', message: `Command ${action} sent successfully.` });
                     } else {
                         const err = await response.json();
-                        setToast({ type: 'error', message: `Failed: ${err.detail || 'Unknown error'}` });
+                        setToast({ type: 'error', message: `Failed: ${err.error || err.detail || 'Unknown error'}` });
                     }
                 } catch (error) {
                     console.error("Error sending command:", error);
@@ -119,6 +121,12 @@ function StaffStationManagement() {
                 {/* Grid Loop */}
                 {loading ? (
                     <div className="flex justify-center p-12"><div className="w-8 h-8 rounded-full border-4 border-slate-200 border-t-purple-500 animate-spin"></div></div>
+                ) : stations.length === 0 ? (
+                    <div className="bg-slate-50 border border-slate-200 rounded-2xl p-12 text-center my-4">
+                        <span className="material-symbols-outlined text-4xl text-slate-300 mb-2">desktop_windows</span>
+                        <p className="text-sm font-bold text-slate-700">ไม่มีสถานีเครื่องในระบบ (No Stations Registered)</p>
+                        <p className="text-xs text-slate-400 mt-1">เครื่องจะปรากฏขึ้นอัตโนมัติเมื่อเปิดรัน Client Agent บนเครื่องลูกข่าย</p>
+                    </div>
                 ) : (
                     <div className="grid grid-cols-2 lg:grid-cols-4 xl:grid-cols-6 gap-4">
                         {stations.map((comp) => {
@@ -129,7 +137,7 @@ function StaffStationManagement() {
 
                             if (comp.is_online) {
                                 cardStyle = ''; // Active
-                                if (comp.status === 'in-use' || comp.status === 'occupied') {
+                                if (comp.status === 'in_use' || comp.status === 'in-use' || comp.status === 'occupied') {
                                     displayStatus = 'in-use';
                                     statusColor = 'bg-blue-500';
                                     iconColor = 'text-blue-600 bg-blue-100';
@@ -184,8 +192,8 @@ function StaffStationManagement() {
                                 <div>
                                     <h3 className="font-black text-slate-800 text-lg tracking-tight overflow-hidden text-ellipsis whitespace-nowrap w-40" title={selectedStation.name}>{selectedStation.name}</h3>
                                     <p className="text-xs text-slate-500 mt-0.5">
-                                        {selectedStation.is_online 
-                                          ? (selectedStation.status === 'in-use' || selectedStation.status === 'occupied' ? 'Machine is in use' : 'Machine is idle')
+                                        {selectedStation.is_online
+                                          ? (selectedStation.status === 'in_use' || selectedStation.status === 'in-use' || selectedStation.status === 'occupied' ? 'Machine is in use' : 'Machine is idle')
                                           : 'Offline'}
                                     </p>
                                 </div>
@@ -202,10 +210,28 @@ function StaffStationManagement() {
                             <div className="space-y-4">
                                 <button
                                     onClick={() => {
+                                        handleRemoteAction(selectedStation.id, 'Lock', selectedStation.name);
+                                        setSelectedStation(null);
+                                    }}
+                                    className="w-full bg-purple-600 hover:bg-purple-700 text-white font-bold py-3.5 rounded-2xl text-sm flex items-center justify-center gap-2 transition-all shadow-lg shadow-purple-200"
+                                >
+                                    <span className="material-symbols-outlined">lock</span> Lock Screen (ล็อกหน้าจอทันที)
+                                </button>
+                                <button
+                                    onClick={() => {
+                                        handleRemoteAction(selectedStation.id, 'Unlock', selectedStation.name);
+                                        setSelectedStation(null);
+                                    }}
+                                    className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3.5 rounded-2xl text-sm flex items-center justify-center gap-2 transition-all shadow-lg shadow-emerald-200"
+                                >
+                                    <span className="material-symbols-outlined">lock_open</span> Unlock Screen (ปลดล็อกหน้าจอ)
+                                </button>
+                                <button
+                                    onClick={() => {
                                         handleRemoteAction(selectedStation.id, 'Logout', selectedStation.name);
                                         setSelectedStation(null);
                                     }}
-                                    className="w-full bg-amber-500 hover:bg-amber-600 text-white font-bold py-4 rounded-2xl text-sm flex items-center justify-center gap-2 transition-all shadow-lg shadow-amber-200"
+                                    className="w-full bg-amber-500 hover:bg-amber-600 text-white font-bold py-3.5 rounded-2xl text-sm flex items-center justify-center gap-2 transition-all shadow-lg shadow-amber-200"
                                 >
                                     <span className="material-symbols-outlined">logout</span> Force Logout (ตัดการเชื่อมต่อ)
                                 </button>
@@ -214,9 +240,35 @@ function StaffStationManagement() {
                                         handleRemoteAction(selectedStation.id, 'Restart', selectedStation.name);
                                         setSelectedStation(null);
                                     }}
-                                    className="w-full bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold py-4 rounded-2xl text-sm flex items-center justify-center gap-2 transition-all"
+                                    className="w-full bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold py-3.5 rounded-2xl text-sm flex items-center justify-center gap-2 transition-all"
                                 >
                                     <span className="material-symbols-outlined">restart_alt</span> Reset Machine (เริ่มใหม่)
+                                </button>
+
+                                {/* Toggle Maintenance for Staff */}
+                                <button
+                                    onClick={async () => {
+                                        const newStatus = selectedStation.status === 'available' ? 'maintenance' : 'available';
+                                        try {
+                                            const res = await apiFetch(`/computers/${selectedStation.id}`, {
+                                                method: 'PUT',
+                                                user,
+                                                headers: { 'Content-Type': 'application/json' },
+                                                body: JSON.stringify({ status: newStatus })
+                                            });
+                                            if (res.ok) {
+                                                setToast({ type: 'success', message: `Station ${selectedStation.name} set to ${newStatus}` });
+                                                fetchStations();
+                                            }
+                                        } catch {
+                                            setToast({ type: 'error', message: "Network error updating station status" });
+                                        }
+                                        setSelectedStation(null);
+                                    }}
+                                    className="w-full bg-slate-50 border border-slate-200 hover:bg-slate-100 text-slate-600 font-bold py-3 rounded-2xl text-xs flex items-center justify-center gap-2 transition-all"
+                                >
+                                    <span className="material-symbols-outlined text-base">{selectedStation.status === 'available' ? 'build' : 'check_circle'}</span>
+                                    {selectedStation.status === 'available' ? 'Set to Maintenance (แจ้งซ่อมบำรุง)' : 'Set to Available (เปิดพร้อมใช้งาน)'}
                                 </button>
                             </div>
                         ) : (

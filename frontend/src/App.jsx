@@ -1,6 +1,7 @@
 // src/App.jsx
 import React, { useState, useEffect, useContext, createContext } from 'react';
 import { HashRouter, Routes, Route, useNavigate, Navigate, useLocation } from 'react-router-dom';
+import { logoutRequest, apiFetch } from './api';
 
 // --- Import ไฟล์หน้าเว็บ ---
 import Login from './page/Login';
@@ -20,12 +21,38 @@ export const AuthProvider = ({ children }) => {
   const navigate = useNavigate();
 
   useEffect(() => {
-    // เช็คว่า User เคย Login ค้างไว้ไหม
-    const storedUser = localStorage.getItem('user_data');
-    if (storedUser) {
-      setUser(JSON.parse(storedUser));
-    }
-    setLoading(false);
+    let active = true;
+    const restoreSession = async () => {
+      try {
+        const storedUser = localStorage.getItem('user_data');
+        if (!storedUser) return;
+        const parsed = JSON.parse(storedUser);
+        if (!parsed || typeof parsed !== 'object' || !parsed.role) throw new Error('Invalid stored session');
+        if (parsed.token) {
+          delete parsed.token;
+          localStorage.setItem('user_data', JSON.stringify(parsed));
+        }
+        try {
+          const response = await apiFetch('/users/me', { user: parsed });
+          if (!response.ok) {
+            localStorage.removeItem('user_data');
+            return;
+          }
+          const profile = await response.json();
+          const refreshedUser = { ...parsed, ...profile, csrfToken: parsed.csrfToken };
+          if (active) setUser(refreshedUser);
+          localStorage.setItem('user_data', JSON.stringify(refreshedUser));
+        } catch {
+          if (active) setUser(parsed);
+        }
+      } catch {
+        try { localStorage.removeItem('user_data'); } catch { /* Storage may be unavailable. */ }
+      } finally {
+        if (active) setLoading(false);
+      }
+    };
+    void restoreSession();
+    return () => { active = false; };
   }, []);
 
   const login = (userData) => {
@@ -52,7 +79,9 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
-  const logout = () => {
+  const logout = async () => {
+    // Clear the server-side HttpOnly session cookie first, then local state.
+    await logoutRequest(user);
     setUser(null);
     localStorage.removeItem('user_data');
     navigate('/login');
@@ -65,6 +94,7 @@ export const AuthProvider = ({ children }) => {
   );
 };
 
+// eslint-disable-next-line react-refresh/only-export-components
 export const useAuth = () => useContext(AuthContext);
 
 // ==========================================
@@ -142,7 +172,6 @@ const publicStyles = `
 const PublicHome = () => {
   const navigate = useNavigate();
   const { user } = useAuth(); // ดึง UseAuth เข้ามาเช็ค
-  // Mock Data
   const [stations, setStations] = useState([]);
   const [initialLoading, setInitialLoading] = useState(true);
 
@@ -150,7 +179,7 @@ const PublicHome = () => {
   useEffect(() => {
     const fetchStations = async () => {
       try {
-        const response = await fetch("http://localhost:8000/computers");
+        const response = await apiFetch("/computers");
         if (response.ok) {
           const data = await response.json();
           setStations(data);
