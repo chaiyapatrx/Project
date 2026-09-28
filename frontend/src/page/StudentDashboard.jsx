@@ -66,6 +66,7 @@ function StudentDashboard() {
     // Real Data State
     const [stations, setStations] = useState([]);
     const [loading, setLoading] = useState(true);
+    const [stationsError, setStationsError] = useState("");
 
     const [myBookings, setMyBookings] = useState([]);
     const [showBookingsModal, setShowBookingsModal] = useState(false);
@@ -105,13 +106,14 @@ function StudentDashboard() {
     const fetchStations = useCallback(async () => {
         try {
             const response = await apiFetch("/computers");
-            if (response.ok) {
-                const data = await response.json();
-                setStations(data);
-            }
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const data = await response.json();
+            if (!Array.isArray(data)) throw new Error("Unexpected station response");
+            setStations(data);
+            setStationsError("");
         } catch (error) {
             console.error("Error fetching stations:", error);
-            setToast({ type: 'error', message: "Failed to load stations" });
+            setStationsError("Unable to load station status. Check the server connection and try again.");
         } finally {
             setLoading(false);
         }
@@ -245,17 +247,31 @@ function StudentDashboard() {
                             <p className="text-slate-500 text-sm mt-0.5">Computer Lab • {stations.length} Total Stations</p>
                         </div>
                         <div className="flex items-center gap-2 px-4 py-2 rounded-full bg-purple-50 border border-purple-100 shadow-sm">
-                            <div className="w-2.5 h-2.5 rounded-full bg-primary animate-pulse"></div>
-                            <span className="text-sm font-bold text-primary">{availableCount} Available</span>
+                            <div className={`w-2.5 h-2.5 rounded-full ${stationsError ? 'bg-rose-500' : 'bg-primary animate-pulse'}`}></div>
+                            <span className={`text-sm font-bold ${stationsError ? 'text-rose-600' : 'text-primary'}`}>
+                                {stationsError ? 'Status unavailable' : `${availableCount} Available`}
+                            </span>
                         </div>
                     </div>
 
                     <div className="flex-1 overflow-y-auto custom-scrollbar pr-2 pb-6">
                         {loading ? (
                             <div className="flex justify-center p-12" role="status">Loading stations…</div>
+                        ) : stationsError && stations.length === 0 ? (
+                            <div className="text-center p-12 text-slate-600" role="alert">
+                                <p>{stationsError}</p>
+                                <button onClick={fetchStations} className="mt-3 text-primary font-bold underline">Try again</button>
+                            </div>
                         ) : stations.length === 0 ? (
                             <div className="text-center p-12 text-slate-500">No stations are registered yet.</div>
                         ) : (
+                        <>
+                        {stationsError && (
+                            <div className="mb-4 flex items-center justify-between gap-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800" role="alert">
+                                <span>Unable to refresh station status. The displayed information may be out of date.</span>
+                                <button onClick={fetchStations} className="shrink-0 font-bold underline">Try again</button>
+                            </div>
+                        )}
                         <div className="station-grid">
                             {stations.map((station) => {
                                 const isOnline = station.is_online;
@@ -299,6 +315,7 @@ function StudentDashboard() {
                                 );
                             })}
                         </div>
+                        </>
                         )}
                     </div>
                 </div>

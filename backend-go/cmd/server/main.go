@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"database/sql"
 	"log"
 	"net/http"
 	"os"
@@ -53,6 +54,7 @@ func main() {
 
 	// Restore any ongoing active bookings into memory state
 	type activeBookingInfo struct {
+		BookingID    int       `db:"booking_id"`
 		ComputerName string    `db:"computer_name"`
 		UserID       int       `db:"user_id"`
 		UserName     string    `db:"user_name"`
@@ -60,16 +62,17 @@ func main() {
 	}
 	var activeBookings []activeBookingInfo
 	if err := db.Select(&activeBookings, `
-		SELECT c.name as computer_name, b.user_id, u.username as user_name, b.end_time
+		SELECT b.id as booking_id, c.name as computer_name, b.user_id, u.username as user_name, b.end_time
 		FROM bookings b
 		JOIN computers c ON c.id = b.computer_id
 		JOIN users u ON u.id = b.user_id
-		WHERE b.status = 'active' AND b.end_time > NOW()`); err != nil {
+		WHERE b.status = 'active'`); err != nil {
 		log.Fatalf("[Hub] Failed to restore active sessions: %v", err)
 	}
 	for _, ab := range activeBookings {
 		if state, exists := h.Computers[ab.ComputerName]; exists {
 			state.Status = "in_use"
+			state.CurrentBookingID = ab.BookingID
 			state.CurrentUserID = &ab.UserID
 			userNameCopy := ab.UserName
 			state.CurrentUserName = &userNameCopy
@@ -80,6 +83,38 @@ func main() {
 	if len(activeBookings) > 0 {
 		log.Printf("[Hub] Restored %d active booking sessions into memory", len(activeBookings))
 	}
+	type activeUsageInfo struct {
+		UsageLogID   int          `db:"usage_log_id"`
+		ComputerName string       `db:"computer_name"`
+		UserID       int          `db:"user_id"`
+		UserName     string       `db:"user_name"`
+		SessionEnd   sql.NullTime `db:"session_ends_at"`
+	}
+	var activeUsage []activeUsageInfo
+	if err := db.Select(&activeUsage, `
+		SELECT l.id AS usage_log_id, c.name AS computer_name, l.user_id, u.username AS user_name, l.session_ends_at
+		FROM usage_logs l
+		JOIN computers c ON c.id = l.computer_id
+		JOIN users u ON u.id = l.user_id
+		WHERE l.booking_id IS NULL AND l.end_time IS NULL`); err != nil {
+		log.Fatalf("[Hub] Failed to restore active walk-in sessions: %v", err)
+	}
+	for _, session := range activeUsage {
+		if state := h.Computers[session.ComputerName]; state != nil && state.CurrentBookingID == 0 {
+			state.Status = "in_use"
+			state.CurrentUsageLogID = session.UsageLogID
+			state.CurrentUserID = &session.UserID
+			userNameCopy := session.UserName
+			state.CurrentUserName = &userNameCopy
+			// A legacy open row with no expiry should be restored as already
+			// expired so the worker can close it and release the station.
+			endTimeCopy := session.SessionEnd.Time
+			state.SessionEndsAt = &endTimeCopy
+		}
+	}
+	if len(activeUsage) > 0 {
+		log.Printf("[Hub] Restored %d active walk-in sessions into memory", len(activeUsage))
+	}
 
 	// 5. Start Real-time Session Countdown Worker
 	stopSessionWorker := worker.StartSessionWorker(db, h)
@@ -88,7 +123,14 @@ func main() {
 	// 6. Router Setup
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
-	r.Use(gin.Logger(), gin.Recovery(), middleware.SecurityHeaders(), middleware.LimitRequestBody(1<<20))
+	r.Use(gin.Logger(), gin.Recovery(), middleware.SecurityHeaders(), func(c *gin.Context) {
+		limit := int64(1 << 20)
+		if c.Request.Method == http.MethodPost && c.Request.URL.Path == "/api/admin/agent-releases" {
+			limit = 17 << 20 // 16 MB Agent EXE plus multipart headers
+		}
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, limit)
+		c.Next()
+	})
 
 	// Trusted proxies: only honor client-IP headers (X-Forwarded-For, etc.)
 	// from explicitly trusted proxies. Empty list => trust none, so ClientIP()
@@ -110,12 +152,18 @@ func main() {
 	// Handlers
 	authH := handler.NewAuthHandler(db, cfg)
 	compH := handler.NewComputerHandler(db, h)
+	updatesH, err := handler.NewAgentUpdateHandler(db, cfg.AgentReleaseDir)
+	if err != nil {
+		log.Fatalf("[Agent Updates] Cannot initialize release storage: %v", err)
+	}
 	bookH := handler.NewBookingHandler(db, h)
 	settH := handler.NewSettingsHandler(db)
 	wsH := handler.NewWSHandler(h, cfg, db)
 	loginRateLimit := middleware.RateLimitByIP(60, time.Minute)
 	registrationRateLimit := middleware.RateLimitByIP(10, time.Hour)
 	agentRateLimit := middleware.RateLimitByIP(120, time.Minute)
+	stationLoginRateLimit := middleware.RateLimitByIP(60, time.Minute)
+	enrollmentRateLimit := middleware.RateLimitByIP(30, time.Minute)
 
 	// Unauthenticated health endpoints expose status only; readiness checks the database.
 	r.GET("/health/live", middleware.Liveness())
@@ -130,7 +178,11 @@ func main() {
 
 	// --- WebSockets ---
 	r.GET("/api/ws/agent", agentRateLimit, wsH.AgentWS) // Client Agent endpoint
-	r.GET("/api/ws/monitor", wsH.MonitorWS)             // React Frontend endpoint
+	r.POST("/api/agent/login", stationLoginRateLimit, wsH.StationLogin)
+	r.POST("/api/agent/enroll", enrollmentRateLimit, compH.EnrollAgent)
+	r.GET("/api/agent/update", agentRateLimit, updatesH.Manifest)
+	r.GET("/api/agent/releases/:sha/file", agentRateLimit, updatesH.Download)
+	r.GET("/api/ws/monitor", wsH.MonitorWS) // React Frontend endpoint
 
 	// --- Protected Routes ---
 	api := r.Group("")
@@ -149,6 +201,12 @@ func main() {
 
 		// Computers Operations
 		api.GET("/admin/computers", middleware.RequireRoles("admin", "staff"), compH.ListComputersAdmin)
+		api.GET("/api/admin/computers/pending", middleware.RequireRoles("admin"), compH.ListPendingAgents)
+		api.GET("/api/admin/agent-releases", middleware.RequireRoles("admin", "staff"), updatesH.List)
+		api.POST("/api/admin/agent-releases", middleware.RequireRoles("admin"), updatesH.Upload)
+		api.POST("/api/admin/agent-releases/:id/activate", middleware.RequireRoles("admin", "staff"), updatesH.Activate)
+		api.DELETE("/api/admin/agent-releases/active", middleware.RequireRoles("admin", "staff"), updatesH.Pause)
+		api.POST("/api/admin/computers/:id/approve", middleware.RequireRoles("admin"), compH.ApproveAgent)
 		api.POST("/computers", middleware.RequireRoles("admin"), compH.CreateComputer)
 		api.POST("/api/admin/computers/:id/agent-secret", middleware.RequireRoles("admin"), compH.RotateAgentSecret)
 		api.PUT("/computers/:id", middleware.RequireRoles("admin", "staff"), compH.UpdateComputer)

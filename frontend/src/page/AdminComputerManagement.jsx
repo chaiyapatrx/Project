@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../App';
 import { apiFetch } from '../api';
+import AgentUpdates from './AgentUpdates';
 const Toast = ({ message, type, onClose }) => {
     useEffect(() => { const timer = setTimeout(onClose, 3000); return () => clearTimeout(timer); }, [onClose]);
     const bgClass = type === 'success' ? 'bg-emerald-50 border-emerald-200 text-emerald-800' : 'bg-rose-50 border-rose-200 text-rose-800';
@@ -16,6 +17,8 @@ function AdminComputerManagement() {
     const { user } = useAuth();
     const [toast, setToast] = useState(null);
     const [computers, setComputers] = useState([]);
+    const [pendingAgents, setPendingAgents] = useState([]);
+    const [pendingError, setPendingError] = useState(false);
     const [loading, setLoading] = useState(true);
     const [selectedComputer, setSelectedComputer] = useState(null);
     const [isUpdating, setIsUpdating] = useState(false);
@@ -39,9 +42,45 @@ function AdminComputerManagement() {
         }
     }, [user]);
 
+    const fetchPendingAgents = useCallback(async () => {
+        if (user?.role !== 'admin') return;
+        try {
+            const response = await apiFetch('/api/admin/computers/pending', { user });
+            if (response.ok) {
+                setPendingAgents(await response.json());
+                setPendingError(false);
+            } else {
+                setPendingError(true);
+            }
+        } catch (error) {
+            console.error('Error fetching pending stations:', error);
+            setPendingError(true);
+        }
+    }, [user]);
+
     useEffect(() => {
         if (user) fetchComputers();
     }, [user, fetchComputers]);
+
+    useEffect(() => {
+        fetchPendingAgents();
+        const timer = setInterval(fetchPendingAgents, 10000);
+        return () => clearInterval(timer);
+    }, [fetchPendingAgents]);
+
+    const approveAgent = async (agent) => {
+        try {
+            const response = await apiFetch(`/api/admin/computers/${agent.id}/approve`, { method: 'POST', user });
+            if (!response.ok) {
+                const data = await response.json().catch(() => ({}));
+                throw new Error(data.error || 'Could not approve station');
+            }
+            setToast({ type: 'success', message: `${agent.name} approved; agent will connect automatically.` });
+            await Promise.all([fetchPendingAgents(), fetchComputers()]);
+        } catch (error) {
+            setToast({ type: 'error', message: error.message });
+        }
+    };
 
     const handleAddComputer = async (e) => {
         e.preventDefault();
@@ -112,9 +151,13 @@ function AdminComputerManagement() {
 
                     if (response.ok) {
                         const data = await response.json();
-                        setToast({ type: 'success', message: `Batch ${action} sent to ${data.delivered_count || 0} active stations.` });
+                        const deliveredCount = Number(data.delivered_count) || 0;
+                        setToast(deliveredCount > 0
+                            ? { type: 'success', message: `Batch ${action} sent to ${deliveredCount} active stations.` }
+                            : { type: 'error', message: `No active stations received the ${action} command.` });
                     } else {
-                        setToast({ type: 'error', message: `Failed to broadcast ${action}` });
+                        const err = await response.json().catch(() => ({}));
+                        setToast({ type: 'error', message: err.error || err.detail || `Failed to broadcast ${action}` });
                     }
                 } catch {
                     setToast({ type: 'error', message: "Network error sending batch command" });
@@ -148,11 +191,11 @@ function AdminComputerManagement() {
                         body: JSON.stringify({ command: mappedCommand })
                     });
 
-                    if (response.ok) {
-                        setToast({ type: 'success', message: `Command ${action} sent successfully.` });
+                    const data = await response.json().catch(() => ({}));
+                    if (!response.ok || data.delivered === false) {
+                        setToast({ type: 'error', message: data.error || data.detail || data.message || `Command ${action} was not delivered.` });
                     } else {
-                        const err = await response.json();
-                        setToast({ type: 'error', message: `Failed: ${err.error || err.detail || 'Unknown error'}` });
+                        setToast({ type: 'success', message: `Command ${action} sent successfully.` });
                     }
                 } catch (error) {
                     console.error("Error sending command:", error);
@@ -227,8 +270,8 @@ function AdminComputerManagement() {
             {isAddModalOpen && (
                 <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
                     <form onSubmit={handleAddComputer} className="bg-white rounded-2xl p-6 w-full max-w-sm shadow-2xl">
-                        <h2 className="text-lg font-bold text-slate-800 mb-2">Add Station</h2>
-                        <p className="text-sm text-slate-500 mb-4">Create a station first, then configure its agent with the one-time secret.</p>
+                        <h2 className="text-lg font-bold text-slate-800 mb-2">Manually Add Station</h2>
+                        <p className="text-sm text-slate-500 mb-4">For older agents only. New agents request approval automatically after installation.</p>
                         <label className="block text-sm font-medium text-slate-600 mb-1" htmlFor="station-name">Station name</label>
                         <input id="station-name" autoFocus required maxLength={50} value={newComputerName} onChange={e => setNewComputerName(e.target.value)} className="w-full border rounded-lg px-3 py-2 mb-5" />
                         <div className="flex justify-end gap-2">
@@ -243,7 +286,7 @@ function AdminComputerManagement() {
                 <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
                     <div className="bg-white rounded-2xl p-6 w-full max-w-lg shadow-2xl">
                         <h2 className="text-lg font-bold text-slate-800">Save this agent secret</h2>
-                        <p className="text-sm text-amber-700 bg-amber-50 border border-amber-100 rounded-lg p-3 my-3">Shown once. Put it in this station's <code>config.json</code>; rotating it disconnects the current agent.</p>
+                        <p className="text-sm text-amber-700 bg-amber-50 border border-amber-100 rounded-lg p-3 my-3">Shown once for manual setup. Save it in the agent's private config.json; rotating it disconnects the current agent.</p>
                         <label className="block text-xs font-bold text-slate-500 mb-1" htmlFor="agent-secret">{provisionedAgent.name}</label>
                         <input id="agent-secret" readOnly value={provisionedAgent.secret} onFocus={e => e.target.select()} className="w-full border rounded-lg px-3 py-2 font-mono text-sm" />
                         <div className="flex justify-end gap-2 mt-4">
@@ -294,21 +337,29 @@ function AdminComputerManagement() {
                             {/* Toggle Maintenance */}
                             <button
                                 disabled={isUpdating}
-                                onClick={() => {
+                                onClick={async () => {
                                     setIsUpdating(true);
                                     const newStatus = selectedComputer.status === 'available' ? 'maintenance' : 'available';
-
-                                    apiFetch(`/computers/${selectedComputer.id}`, {
-                                        method: 'PUT',
-                                        user,
-                                        headers: { 'Content-Type': 'application/json' },
-                                        body: JSON.stringify({ status: newStatus })
-                                    }).then(async (res) => {
-                                        if (res.ok) {
-                                            await fetchComputers();
-                                            setSelectedComputer(null);
+                                    try {
+                                        const res = await apiFetch(`/computers/${selectedComputer.id}`, {
+                                            method: 'PUT',
+                                            user,
+                                            headers: { 'Content-Type': 'application/json' },
+                                            body: JSON.stringify({ status: newStatus })
+                                        });
+                                        if (!res.ok) {
+                                            const err = await res.json().catch(() => ({}));
+                                            setToast({ type: 'error', message: err.error || err.detail || 'Failed to update station status' });
+                                            return;
                                         }
-                                    }).finally(() => setIsUpdating(false));
+                                        await fetchComputers();
+                                        setSelectedComputer(null);
+                                        setToast({ type: 'success', message: `Station ${selectedComputer.name} set to ${newStatus}` });
+                                    } catch {
+                                        setToast({ type: 'error', message: 'Network error updating station status' });
+                                    } finally {
+                                        setIsUpdating(false);
+                                    }
                                 }}
                                 className={`p-4 rounded-xl border-2 flex flex-col items-center gap-2 transition-all ${selectedComputer.status === 'available' ? 'border-orange-100 bg-orange-50 text-orange-600 hover:bg-orange-100' : 'border-emerald-100 bg-emerald-50 text-emerald-600 hover:bg-emerald-100'} ${isUpdating ? 'opacity-50 cursor-wait' : ''}`}
                             >
@@ -362,7 +413,7 @@ function AdminComputerManagement() {
                         onClick={() => setIsAddModalOpen(true)}
                         className="bg-[#7c3aed] hover:bg-[#6d28d9] text-white px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all shadow-sm shadow-purple-200"
                     >
-                        <span className="material-symbols-outlined text-sm">add</span> Add Station
+                        <span className="material-symbols-outlined text-sm">add</span> Manual Add
                     </button>
                     <button onClick={() => handleBatchAction('Logout')} className="bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all">
                         <span className="material-symbols-outlined text-sm">logout</span> Logout All
@@ -377,6 +428,22 @@ function AdminComputerManagement() {
             </header>
 
             <div className="flex-1 overflow-y-auto custom-scrollbar p-8">
+
+                <AgentUpdates />
+
+                {user?.role === 'admin' && (
+                    <section className="bg-white rounded-xl border border-violet-200 p-4 mb-6">
+                        <h2 className="font-bold text-slate-800 mb-1">Stations waiting for approval ({pendingAgents.length})</h2>
+                        <p className="text-sm text-slate-500 mb-3">Install AUCC Agent on the computer. Check its name and hardware ID before approving.</p>
+                        {pendingError && <p className="text-sm text-rose-600 mb-2">Could not load pending stations. Check the backend connection and database migration.</p>}
+                        {!pendingError && pendingAgents.length === 0 ? <p className="text-sm text-slate-400">No pending stations</p> : pendingAgents.map(agent => (
+                            <div key={agent.id} className="flex items-center justify-between gap-3 border-t py-3">
+                                <div><strong>{agent.name}</strong><p className="text-xs text-slate-500 font-mono">{agent.hwid}</p></div>
+                                <button onClick={() => approveAgent(agent)} className="px-3 py-2 rounded-lg bg-violet-600 text-white text-sm font-bold hover:bg-violet-700">Approve</button>
+                            </div>
+                        ))}
+                    </section>
+                )}
 
                 {/* Status Overview */}
                 <div className="grid grid-cols-4 gap-4 mb-8">

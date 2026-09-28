@@ -1,69 +1,55 @@
-# ผลประเมินความพร้อมสำหรับทดลองใช้แบบจำกัด
+# ความพร้อมระบบ AUCC สำหรับทดลองใช้
 
-วันที่ประเมิน: 24 กันยายน 2026
+ประเมินวันที่ 28 กันยายน 2026
 
-## ความสมบูรณ์ปัจจุบัน: 69%
+## สถานะปัจจุบัน: 72%
 
-คะแนนนี้เป็นการประเมินความพร้อมจากโค้ด เอกสาร และผลตรวจที่รันได้ใน workspace ไม่ใช่เปอร์เซ็นต์ test coverage หรือการรับรองว่าไม่มีบั๊ก/ช่องโหว่
+ตัวเลขนี้เป็นการประเมินความพร้อมของระบบ ไม่ใช่ test coverage หรือคำรับรองว่าไม่มีบั๊ก/ช่องโหว่ เพิ่มจากการประเมินเดิม 69% เพราะ flow เข้าสู่ระบบของสถานี, การปิดล็อกเมื่อคำสั่งล้มเหลว และการตรวจ TLS ของฐานข้อมูลชัดเจนขึ้น **ยังไม่พร้อมเปิด pilot กับผู้ใช้จริง** จนกว่าจะผ่านรายการ P0 ด้านล่าง
 
 | ด้าน | คะแนน | น้ำหนัก | คะแนนถ่วงน้ำหนัก |
 |---|---:|---:|---:|
-| Workflow หลัก | 82/100 | 25% | 20.5 |
-| ความปลอดภัย | 76/100 | 25% | 19.0 |
-| ความถูกต้องและความทนทานของข้อมูล | 70/100 | 20% | 14.0 |
+| Workflow หลัก | 86/100 | 25% | 21.5 |
+| ความปลอดภัย | 80/100 | 25% | 20.0 |
+| ความถูกต้องและความทนทานของข้อมูล | 72/100 | 20% | 14.4 |
 | การติดตั้งและการดูแลระบบ | 53/100 | 20% | 10.6 |
-| หลักฐานทดสอบและการปล่อยระบบ | 48/100 | 10% | 4.8 |
-| **รวม** |  | **100%** | **68.9 ≈ 69%** |
+| หลักฐานทดสอบและการปล่อยระบบ | 54/100 | 10% | 5.4 |
+| **รวม** |  | **100%** | **71.9 ≈ 72%** |
 
-โค้ดพร้อมสำหรับเริ่ม **pilot แบบจำกัดบนเครื่องทดสอบและเครือข่ายที่ควบคุมได้** หลังทำรายการ P0 ด้านล่าง แต่ยังไม่พร้อมเปิดใช้งานผ่านอินเทอร์เน็ตหรือใช้กับผู้ใช้จริงวงกว้าง การตั้งโดเมน/TLS ถูกพักไว้ตามที่ตกลงกัน
+## ระบบทำงานอย่างไรในตอนนี้
 
-## งานที่ทำและตรวจแล้ว
+- Agent เริ่มล็อกหน้าจอไว้ระหว่างเชื่อมต่อ backend เครื่องที่ไม่มี booking ปัจจุบันแสดงฟอร์มบัญชี AUCC (ชื่อผู้ใช้/รหัสผ่าน) และให้ใช้งานได้ตามเวลาของ session
+- เครื่องที่มี booking ปัจจุบันแสดงฟอร์ม Access Code 6 หลักของ booking สำหรับเครื่องนั้นเท่านั้น การยกเลิก/หมดเวลา/การเชื่อมต่อ agent หลุดจะกลับสู่หน้าล็อก
+- หน้าล็อกเป็น overlay ภายใน Windows session ที่เข้าระบบแล้ว **ไม่ใช่หน้าล็อกอินของ Windows ก่อนเข้า desktop และไม่ใช่ secure lock ของ Windows** ผู้มีสิทธิ์ควบคุมเครื่องอาจปิด agent ได้ จึงต้องใช้บัญชี Windows สิทธิ์จำกัดและนโยบาย kiosk ตามสภาพแวดล้อมจริง
 
-- Backend ตรวจค่า config สำคัญ, จำกัด rate/body size, เพิ่ม security headers, readiness/liveness, ปิด self-registration โดยปริยาย และจำกัด HTTP ที่ไม่เข้ารหัสให้ bind เฉพาะ loopback
-- Agent ใช้ secret แยกต่อเครื่อง, เก็บ hash ฝั่ง server, ตรวจลายเซ็นและอายุคำสั่ง, จำกัดคำสั่งตาม role และไม่ส่ง hash ออก API; การออก/หมุน secret ทำได้โดย admin
-- เพิ่ม audit events สำหรับการเปลี่ยนแปลงสำคัญ, ป้องกันการลดสิทธิ์/ปิดบัญชี admin คนสุดท้าย และใช้ transaction/row lock ในเส้นทาง booking ที่มีการแข่งขันกัน
-- แก้ flow หน้าเว็บและตาราง admin ที่ทำงานไม่ตรงกับ API, ตัดปุ่ม/คำสั่งที่ backend ไม่รองรับ, แก้ CSV formula injection และแก้ lint
-- `LOCK`/`UNLOCK` ของ agent เปลี่ยนเป็น overlay เต็มจอ: `LOCK` แสดงและ `UNLOCK` ซ่อน overlay; agent ต้องรันใน interactive Windows user session
-- อัปเดต Go dependencies ที่มี advisory ซึ่งแก้ได้; `backend-go` กำหนด Go 1.26 ขึ้นไป
-- ปรับ README, ตัวอย่าง environment และสคริปต์ migration ให้ตรงกับการตั้งค่า local trial โดยไม่ใส่ secret จริง
+## งานที่ตรวจและแก้
 
-## ผลตรวจที่รันได้
+- Backend: ผูกการเข้าระบบกับ station secret และ HWID; ตรวจสถานะ booking ภายใต้ database row lock; ปฏิเสธรหัส/โหมดที่ไม่ตรง; ติดตาม session แบบ walk-in และ booking; จัดการ session หมดอายุและข้อมูลเก่าที่ไม่มีวันหมดอายุ; ตัดการเชื่อมต่อ agent เมื่อส่งคำสั่ง LOCK/UNLOCK ไม่สำเร็จ
+- ฐานข้อมูล: เพิ่ม migration สำหรับ `usage_logs.session_ends_at`, สถานะรออนุมัติ และรุ่น Agent; backend และ migration ใช้ TLS พร้อมตรวจ CA และชื่อ host เมื่อ MySQL อยู่นอกเครื่อง; ไม่มีการลดระดับไปใช้การเชื่อมต่อที่ไม่ตรวจใบรับรอง
+- Client: ตรวจคำสั่งและ session จาก backend, ล็อกเมื่อ WebSocket หลุด, จำกัด heartbeat, แสดงฟอร์มล็อกอินใหม่เมื่อกลับสู่สถานะล็อก; ตัวติดตั้ง `.exe` ถามเฉพาะ server URL, สร้าง credential ในเครื่อง, ส่งคำขอจับคู่ และเริ่มอัตโนมัติเมื่อบัญชีนั้น sign in; เพิ่มอัปเดต Agent จากเว็บพร้อมตรวจ SHA-256 และคืนรุ่นเดิมเมื่อเปิดรุ่นใหม่ไม่ผ่าน
+- Frontend: แยก server offline จากรหัสผ่านผิด/ข้อมูลว่าง, แก้หน้าประวัติการใช้งานให้เรียก API จริง, แสดงข้อผิดพลาดเมื่อคำสั่งถึงเครื่องไม่สำเร็จ, กันบันทึก Settings ก่อนโหลดค่า และลบประกาศตัวอย่างที่ไม่ใช่ข้อมูลจริง
+- ตรวจไฟล์ที่ติดตามโดย Git แล้ว: `.env` และ `client-go/config.json` ถูก ignore และไม่ถูกติดตาม
 
-- Backend: `go test ./...` ผ่าน (3 tests ใน 9 packages), `go vet ./...` ผ่าน
-- Agent: `go test ./...` และ `go vet ./...` ผ่าน; ไม่มี test cases ใน client package แต่ compile ผ่านทั้ง Windows 386 และ Windows amd64
-- ไม่ได้ผลจาก Go race detector เพราะ environment นี้เป็น Windows/386 ซึ่งไม่รองรับ `-race`
-- Frontend: `npm run lint`, `npm run build` และ `npm audit --audit-level=high` ผ่าน; audit พบ 0 vulnerabilities
-- Go: `govulncheck ./...` ไม่พบช่องโหว่ที่โค้ดเรียกถึง แต่พบ module-level advisory หนึ่งรายการ คือ [GO-2026-5932](https://pkg.go.dev/vuln/GO-2026-5932) ใน `golang.org/x/crypto/openpgp` ซึ่งเป็น package ที่เลิกดูแลและโค้ด AUCC ไม่ได้ import; advisory นี้ไม่มีเวอร์ชันที่แก้แล้ว
-- Migration script ผ่าน Python compile check และ self-check ของ CSV ผ่าน
+## หลักฐานการตรวจ
 
-การตรวจนี้ไม่ได้เชื่อมต่อฐานข้อมูลจริง, ไม่ได้รัน migration กับข้อมูล staging, ไม่ได้ทดสอบ agent บนเครื่องสถานีจริง และไม่ได้ทำ penetration test
+- Backend: Go unit tests 44 เคสใน 9 packages, `go vet`, Windows build และ Python migration unit tests 4 เคสผ่าน; มี regression tests สำหรับ TLS, station auth, booking state และ WebSocket
+- Client: Go tests 14 เคสใน 2 packages, `go vet`, Windows build และตัวติดตั้ง 1.0.0 ผ่าน; ทดสอบการคืน EXE รุ่นเดิมเมื่อรุ่นใหม่ปิดทันที
+- Frontend: `npm run lint` และ `npm run build` ผ่าน; ตรวจด้วย browser แล้วกรณี backend offline แสดงข้อผิดพลาดที่ถูกต้องทั้งหน้า Login และ Guest Overview
+- Dependency scan: `npm audit --audit-level=high` พบ 0 vulnerabilities; `govulncheck` ไม่พบช่องโหว่ในโค้ด Go ที่เรียกใช้ทั้ง backend/client (backend มี module advisory 1 รายการใน package ที่ไม่ได้เรียกใช้)
+- `git diff --check` ผ่าน
+- Go race detector ใช้ไม่ได้บน host นี้ (`windows/386`, `CGO_ENABLED=0`, ไม่มี C compiler)
 
-## ต้องทำก่อนทดลองกับเครื่อง/ผู้ใช้จริง
+## P0 — ต้องผ่านก่อนเปิด pilot
 
-### P0 — ก่อนเริ่ม pilot
+1. **ฐานข้อมูล:** MySQL ระยะไกลที่ตั้งไว้ส่ง certificate chain ซึ่งเครื่องนี้ยังไม่เชื่อถือ การ probe ที่เปิดการตรวจ TLS หยุดก่อนส่ง credential และก่อนอ่าน/แก้ข้อมูล ขอ CA certificate จากผู้ดูแล/ผู้ให้บริการ DB แล้วตั้ง `DB_TLS_CA_FILE`; ตรวจ `SELECT 1` ผ่าน TLS ก่อนสำรองข้อมูล, ทดลอง migration กับสำเนา staging และเริ่ม backend จน `/health/ready` ผ่าน ห้ามนำใบรับรองจากการเชื่อมต่อที่ยังไม่ตรวจสอบไปตั้งเป็น CA เอง
+2. **เครื่องทดลอง:** VM Windows 11 เปิดอยู่ แต่ยังไม่มี Guest Additions/guest IP และยังส่งตัวติดตั้งเข้าไปทดสอบไม่ได้ นำ `client-go/dist/AUCCAgentSetup-1.0.0.exe` เข้า guest แล้วกรอก server URL; ตรวจคำขอและกด Approve ในหน้า Admin; ทดสอบอัปโหลด/ปล่อยรุ่น/ย้อนกลับบน VM ก่อนปล่อยหลายเครื่อง; เตรียมการเชื่อมต่อ WSS ที่ guest เชื่อถือ หรือรัน backend ภายใน guest สำหรับ local trial; ไม่ใช้ remote `ws://`
+3. **ทดสอบ end-to-end บนเครื่องจริงหรือ VM:** ไม่มี booking → บัญชี AUCC เข้าได้; มี booking → บัญชีทั่วไปเข้าไม่ได้, code ผิดเข้าไม่ได้, code ของ booking/เครื่องนั้นเข้าได้; จากนั้นทดสอบยกเลิก, หมดเวลา, หลุด/ต่อ WebSocket, ปิด/เปิด agent, สถานะ DB และ audit log พร้อมกัน รวมการอัปโหลด Agent รุ่นใหม่, ปล่อยรุ่น, รอเครื่องว่าง, rollback และกลับมาออนไลน์
+4. **ความปลอดภัยเครื่อง:** หมุน station secret ที่เคยปรากฏใน tool output, จำกัดสิทธิ์อ่าน `client-go/config.json`, ใช้บัญชี Windows สิทธิ์จำกัด และทดสอบว่า agent เริ่มใน interactive session ทุกครั้ง
 
-1. **หมุน credential ของ agent ที่เคยปรากฏใน tool output** ผ่านหน้า Admin แล้วอัปเดต config ของเครื่องนั้นก่อนเชื่อมต่ออีกครั้ง ห้ามนำ credential เก่ากลับมาใช้
-2. ยืนยันว่า agent ทำงานใน session ของผู้ใช้ Windows ที่ล็อกอินอยู่ ไม่ใช่ Windows service/session 0; ทดลอง `LOCK`, `UNLOCK`, หมดเวลา และยกเลิก booking บนเครื่องทดสอบหนึ่งเครื่อง
-3. Overlay นี้เป็นการบังหน้าจอระดับแอป ไม่ใช่ Windows secure lock ผู้ใช้ที่มีสิทธิ์บนเครื่องยังอาจข้ามหรือปิด agent ได้ หากต้องการบังคับ kiosk ให้ตั้ง Assigned Access/GPO และบัญชี Windows แบบจำกัดสิทธิ์แยกต่างหาก
-4. จำกัด NTFS ACL ของ `client-go/config.json` ให้เฉพาะบัญชีที่รัน agent และผู้ดูแลระบบอ่านได้ เพราะ agent ต้องเก็บ station secret ไว้ในเครื่อง
+## งานต่อหลัง pilot
 
-### P1 — ก่อนขยาย pilot
+- เมื่อกำหนดโดเมน/การเข้าจากเครือข่าย ให้ตั้ง HTTPS/WSS, trusted proxy, allowed origins และ secure cookie ให้ตรงกัน; โดเมนสาธารณะพักไว้ตามที่ตกลง
+- ทดสอบ backup/restore, rollback migration และ recovery เมื่อ backend/DB ดับบน staging ก่อนใช้ข้อมูลสำคัญ
+- ทดสอบการอัปเดต/rollback Agent บน Windows รุ่น/นโยบายของสถานีจริงก่อนปล่อยหลายเครื่อง; การเปลี่ยน `AUCCUpdater.exe` เองยังต้องใช้ตัวติดตั้งใหม่ และควรลงนามไฟล์ EXE ก่อนใช้งานวงกว้าง
+- หน้า Analytics ยังมีส่วนกราฟที่เป็น placeholder และหน้า Usage History จำกัดจำนวนรายการ; ตรวจขอบเขตข้อมูลก่อนนำตัวเลขไปใช้ตัดสินใจ
 
-1. สำรองฐานข้อมูล, ทดลอง `migrations/apply_migrations.py` กับสำเนา staging และทดสอบ restore ก่อนใช้กับฐานข้อมูลที่มีข้อมูลเดิม
-2. ทดสอบ end-to-end booking, ต่อเวลา, ยกเลิก, หมดเวลา, agent หลุด/ต่อใหม่ และการเปลี่ยนสถานะเครื่อง โดยตรวจทั้ง DB, audit log และหน้าจอ agent
-3. กำหนด HTTPS/WSS, allowed origins, cookie secure และ trusted proxy เมื่อได้โดเมน; ห้ามเปิด local HTTP/WS configuration ออกอินเทอร์เน็ต
-4. จัดขั้นตอนติดตั้ง/เริ่ม agent ใน interactive session, สำรอง config อย่างปลอดภัย, อัปเดตและ rollback เวอร์ชัน
-
-### P2 — ก่อนใช้งานวงกว้าง
-
-- เพิ่ม monitoring/alert, log retention, ผู้รับผิดชอบ incident และการทดสอบ restore ตามรอบ
-- สร้าง release/installer ที่ตรวจสอบไฟล์ได้ และทดสอบบน Windows รุ่น/นโยบายของสถานีจริง
-- ตรวจหน้ารายงาน/analytics ที่ยังเป็นข้อมูลตัวอย่างก่อนนำตัวเลขไปใช้ตัดสินใจ
-
-## ขอบเขตและความเสี่ยงที่ยังเหลือ
-
-- ไม่มีผลทดสอบ integration กับ MySQL จริงหรือเครื่อง agent จริง จึงยังยืนยันพฤติกรรม deployment และ race ภายใต้โหลดไม่ได้
-- migration เปลี่ยน schema ได้ แต่ยังไม่ได้รันกับฐานข้อมูลที่ใช้งานจริง; backup/restore และการกลับเวอร์ชันยังต้องพิสูจน์บน staging
-- agent ไม่ได้ติดตั้งหรือกำหนด autostart ให้เครื่องสถานีโดยอัตโนมัติในงานนี้
-- ผล `govulncheck` แยกชัดเจนระหว่าง 0 ช่องโหว่ที่เรียกถึง กับ advisory ที่อยู่ใน package ซึ่งไม่ได้ใช้; ไม่ควรตีความว่า dependency graph ไม่มี advisory ทุกชนิด
-- ไม่ควรใช้ 69% เป็นใบรับรอง production readiness คะแนนจะเปลี่ยนหลัง pilot, restore drill, TLS/deployment และการทดสอบเครื่องจริง
+เปอร์เซ็นต์จะประเมินใหม่หลัง DB และเครื่องทดลองผ่าน end-to-end; ผล unit/build/security scan ใน workspace ยังแทนการทดสอบระบบที่รันจริงไม่ได้

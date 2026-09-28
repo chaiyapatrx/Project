@@ -137,10 +137,16 @@ function StaffSessionControl() {
 
             if (response.ok) {
                 const data = await response.json();
-                setToast({ type: 'success', message: `Broadcast message sent to ${data.delivered_count || 0} online screens.` });
-                setBroadcastMsg('');
+                const deliveredCount = Number(data.delivered_count) || 0;
+                if (deliveredCount > 0) {
+                    setToast({ type: 'success', message: `Broadcast message sent to ${deliveredCount} online screens.` });
+                    setBroadcastMsg('');
+                } else {
+                    setToast({ type: 'error', message: "No online screens received the broadcast message." });
+                }
             } else {
-                setToast({ type: 'error', message: "Failed to broadcast message." });
+                const err = await response.json().catch(() => ({}));
+                setToast({ type: 'error', message: err.error || err.detail || "Failed to broadcast message." });
             }
         } catch {
             setToast({ type: 'error', message: "Network error sending broadcast." });
@@ -164,9 +170,13 @@ function StaffSessionControl() {
 
                     if (response.ok) {
                         const data = await response.json();
-                        setToast({ type: 'success', message: `Global ${action} command sent to ${data.delivered_count || 0} machines.` });
+                        const deliveredCount = Number(data.delivered_count) || 0;
+                        setToast(deliveredCount > 0
+                            ? { type: 'success', message: `Global ${action} command sent to ${deliveredCount} machines.` }
+                            : { type: 'error', message: `No online machines received the ${action} command.` });
                     } else {
-                        setToast({ type: 'error', message: `Failed to execute global ${action}.` });
+                        const err = await response.json().catch(() => ({}));
+                        setToast({ type: 'error', message: err.error || err.detail || `Failed to execute global ${action}.` });
                     }
                 } catch {
                     setToast({ type: 'error', message: "Network error sending global command." });

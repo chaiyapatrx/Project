@@ -20,9 +20,11 @@ type Config struct {
 	DBUser                  string
 	DBPass                  string
 	DBName                  string
+	DBTLSCAFile             string
 	JWTSecret               string
 	JWTExpiresIn            int
 	AgentSecret             string
+	AgentReleaseDir         string
 	AllowedOrigins          []string
 	TrustedProxies          []string
 	SAdminUsername          string
@@ -95,18 +97,20 @@ func LoadConfig() *Config {
 	}
 
 	return &Config{
-		Port:         port,
-		ListenAddr:   listenAddr,
-		TLSCertFile:  tlsCert,
-		TLSKeyFile:   tlsKey,
-		DBHost:       getEnv("DB_HOST", "127.0.0.1"),
-		DBPort:       getEnv("DB_PORT", "3306"),
-		DBUser:       mustGetEnv("DB_USER"),
-		DBPass:       mustGetEnv("DB_PASS"),
-		DBName:       mustGetEnv("DB_NAME"),
-		JWTSecret:    jwtSecret,
-		JWTExpiresIn: exp,
-		AgentSecret:  agentSecret,
+		Port:            port,
+		ListenAddr:      listenAddr,
+		TLSCertFile:     tlsCert,
+		TLSKeyFile:      tlsKey,
+		DBHost:          getEnv("DB_HOST", "127.0.0.1"),
+		DBPort:          getEnv("DB_PORT", "3306"),
+		DBUser:          mustGetEnv("DB_USER"),
+		DBPass:          mustGetEnv("DB_PASS"),
+		DBName:          mustGetEnv("DB_NAME"),
+		DBTLSCAFile:     getEnv("DB_TLS_CA_FILE", ""),
+		JWTSecret:       jwtSecret,
+		JWTExpiresIn:    exp,
+		AgentSecret:     agentSecret,
+		AgentReleaseDir: getEnv("AGENT_RELEASE_DIR", "agent-releases"),
 		AllowedOrigins: splitAndTrim(getEnv("ALLOWED_ORIGINS",
 			"http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000")),
 		TrustedProxies:          splitAndTrim(getEnv("TRUSTED_PROXIES", "")),

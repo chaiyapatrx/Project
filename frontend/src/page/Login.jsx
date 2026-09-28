@@ -1,5 +1,5 @@
 // src/page/Login.jsx
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../App';
 import { apiFetch } from '../api';
@@ -40,23 +40,8 @@ function Login() {
     const [isLoading, setIsLoading] = useState(false);
     const [errorMsg, setErrorMsg] = useState("");
 
-    // --- State สำหรับ UI (Announcements) ---
-    const announcements = [
-        { title: "Vision 2025: Innovation Hub", desc: "Building the future of integrated systems together. Our new campus opens this December." },
-        { title: "New System Update v4.2", desc: "Security patches have been applied to all corporate accounts. Please check your mail." },
-        { title: "Annual Tech Summit", desc: "Join us this Friday for the yearly innovation showcase at the main hall." }
-    ];
-    const [currentIndex, setCurrentIndex] = useState(0);
-
     // --- State สำหรับ UI (Switch Mode) ---
     const isInternal = true;
-
-    useEffect(() => {
-        const timer = setInterval(() => {
-            setCurrentIndex((prevIndex) => (prevIndex + 1) % announcements.length);
-        }, 3000);
-        return () => clearInterval(timer);
-    }, [announcements.length]);
 
     // --- ฟังก์ชัน Login หลัก ---
     const handleLogin = async (e) => {
@@ -85,21 +70,16 @@ function Login() {
                 body: formData,
             });
 
-            if (!response.ok) {
-                throw new Error("Invalid credentials");
-            }
-
             const data = await response.json();
             const csrfToken = data.csrf_token;
-
-            // 3. ดึงข้อมูล User จริงจาก Backend (/users/me) เพื่อเอา Role
-            const userResponse = await apiFetch("/users/me");
-
-            if (!userResponse.ok) {
-                throw new Error("Failed to fetch user profile");
+            if (!response.ok) {
+                setErrorMsg(response.status === 401
+                    ? (data.error || "Incorrect username or password.")
+                    : "Sign-in service is unavailable. Please try again later.");
+                return;
             }
-
-            const userProfile = await userResponse.json();
+            const userProfile = data.user;
+            if (!userProfile) throw new Error("The server did not return a user profile");
 
             const userData = {
                 username: userProfile.username,
@@ -114,7 +94,9 @@ function Login() {
 
         } catch (error) {
             console.error("Login Error:", error);
-            setErrorMsg("Incorrect username or password.");
+            setErrorMsg(error instanceof TypeError
+                ? "Cannot connect to the server. Check the connection and try again."
+                : "Unable to complete sign-in. Please try again.");
         } finally {
             setIsLoading(false);
         }
@@ -140,19 +122,14 @@ function Login() {
                             <div className="absolute top-8 left-8">
                                 <div className="flex h-9 shrink-0 items-center justify-center gap-x-2 rounded-full bg-white/20 backdrop-blur-xl border border-white/30 pl-3 pr-4 shadow-sm">
                                     <span className="material-symbols-outlined text-white text-[20px]">campaign</span>
-                                    <p className="text-white text-xs font-bold uppercase tracking-widest leading-none">Announcements</p>
+                                    <p className="text-white text-xs font-bold uppercase tracking-widest leading-none">Station Access</p>
                                 </div>
                             </div>
 
                             <div className="absolute bottom-0 left-0 p-12 w-full bg-gradient-to-t from-black/40 via-transparent to-transparent min-h-[220px] flex flex-col justify-end">
-                                <div key={currentIndex} className="animate-fade-in flex flex-col gap-3">
-                                    <h3 className="text-white text-3xl font-bold leading-tight">{announcements[currentIndex].title}</h3>
-                                    <p className="text-white/90 text-sm font-light max-w-sm leading-relaxed text-left">{announcements[currentIndex].desc}</p>
-                                    <div className="flex gap-2.5 mt-6">
-                                        {announcements.map((_, index) => (
-                                            <div key={index} className={`h-1.5 transition-all duration-500 rounded-full ${index === currentIndex ? 'w-14 bg-[#7c3aed]' : 'w-4 bg-white/30'}`}></div>
-                                        ))}
-                                    </div>
+                                <div className="animate-fade-in flex flex-col gap-3">
+                                    <h3 className="text-white text-3xl font-bold leading-tight">Computer Lab Access</h3>
+                                    <p className="text-white/90 text-sm font-light max-w-sm leading-relaxed text-left">Sign in to reserve a station and manage your lab sessions.</p>
                                 </div>
                             </div>
                         </div>

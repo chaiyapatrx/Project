@@ -1,8 +1,12 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -16,6 +20,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unsafe"
@@ -28,7 +33,11 @@ type Config struct {
 	MachineName         string `json:"machine_name"`
 	PingIntervalSeconds int    `json:"ping_interval_seconds"`
 	AgentSecret         string `json:"agent_secret"`
+	AutoEnroll          bool   `json:"auto_enroll"`
+	enrollmentApproved  bool
 }
+
+var agentVersion = "1.0.0"
 
 type CommandMessage struct {
 	Action    string                 `json:"action"`
@@ -39,6 +48,13 @@ type CommandMessage struct {
 
 // maxCommandAgeSeconds bounds how old a signed command may be, mitigating replay.
 const maxCommandAgeSeconds = 30
+
+const maxPingIntervalSeconds = 30
+
+const (
+	agentReadTimeout      = 60 * time.Second
+	agentPongWriteTimeout = 2 * time.Second
+)
 
 var (
 	modUser32                = syscall.NewLazyDLL("user32.dll")
@@ -54,6 +70,11 @@ var (
 	procBeginPaint           = modUser32.NewProc("BeginPaint")
 	procEndPaint             = modUser32.NewProc("EndPaint")
 	procGetClientRect        = modUser32.NewProc("GetClientRect")
+	procGetWindowTextW       = modUser32.NewProc("GetWindowTextW")
+	procSetWindowTextW       = modUser32.NewProc("SetWindowTextW")
+	procEnableWindow         = modUser32.NewProc("EnableWindow")
+	procSetFocus             = modUser32.NewProc("SetFocus")
+	procSendMessageW         = modUser32.NewProc("SendMessageW")
 	procGetMessageW          = modUser32.NewProc("GetMessageW")
 	procTranslateMessage     = modUser32.NewProc("TranslateMessage")
 	procDispatchMessageW     = modUser32.NewProc("DispatchMessageW")
@@ -69,11 +90,31 @@ var (
 	stationLockOverlayWindow uintptr
 	stationLockOverlayProc   uintptr
 	stationLockOverlayFont   uintptr
-	stationLockOverlayText   []uint16
+	stationAuthFont          uintptr
+	stationAgentConfig       *Config
+	stationHWID              string
+	stationAuthMode          string
+	stationTitleControl      uintptr
+	stationStatusControl     uintptr
+	stationUsernameControl   uintptr
+	stationPasswordControl   uintptr
+	stationAccessCodeControl uintptr
+	stationAccountLabel      uintptr
+	stationPasswordLabel     uintptr
+	stationCodeLabel         uintptr
+	stationSubmitControl     uintptr
+	stationLoginPending      bool
+	stationLoginResultMu     sync.Mutex
+	stationLoginResult       string
 )
 
 const (
 	wmAppStationLock = 0x8001
+	wmAppAuthMode    = 0x8002
+	wmAppLoginResult = 0x8003
+	wmCreate         = 0x0001
+	wmCommand        = 0x0111
+	wmCtlColorStatic = 0x0138
 	wmClose          = 0x0010
 	wmPaint          = 0x000F
 	wmEraseBkgnd     = 0x0014
@@ -81,15 +122,29 @@ const (
 	scClose          = 0xF060
 
 	wsPopup        = 0x80000000
+	wsChild        = 0x40000000
+	wsVisible      = 0x10000000
+	wsTabStop      = 0x00010000
+	wsBorder       = 0x00800000
+	esAutoHScroll  = 0x00000080
+	esPassword     = 0x00000020
+	bsDefault      = 0x00000001
+	ssCenter       = 0x00000001
 	wsExTopmost    = 0x00000008
 	wsExToolWindow = 0x00000080
 
 	swHide = 0
 	swShow = 5
 
-	swpNoSize     = 0x0001
-	swpNoMove     = 0x0002
-	swpShowWindow = 0x0040
+	swpNoSize            = 0x0001
+	swpNoMove            = 0x0002
+	swpShowWindow        = 0x0040
+	wmSetFont            = 0x0030
+	bnClicked            = 0
+	stationLoginButtonID = 1001
+	authModeConnecting   = 0
+	authModeAccount      = 1
+	authModeAccessCode   = 2
 
 	dtCenter   = 0x00000001
 	dtVCenter  = 0x00000004
@@ -139,32 +194,54 @@ type stationLockMessage struct {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "--version" {
+		fmt.Println(agentVersion)
+		return
+	}
 	log.Println("==================================================")
 	log.Println(" AUCC High-Performance Client Agent (Go)")
 	log.Println("==================================================")
+	if len(os.Args) > 1 && os.Args[1] == "--enroll" {
+		cfg, err := loadConfig()
+		if err != nil {
+			log.Printf("[Agent] Enrollment setup failed: %v", err)
+			return
+		}
+		if err := enrollAgent(context.Background(), cfg, getHWID()); err != nil {
+			log.Printf("[Agent] Enrollment will retry when the agent starts: %v", err)
+		}
+		return
+	}
 
 	if err := startStationLockOverlay(); err != nil {
 		log.Fatalf("[Agent] Could not start station lock overlay: %v", err)
 	}
+	setStationAuthMode("connecting")
+	setStationLocked(true)
 
-	cfg := loadConfig()
+	cfg, err := loadConfig()
+	if err != nil {
+		log.Fatalf("[Agent] Could not load config: %v", err)
+	}
 	if strings.TrimSpace(cfg.AgentSecret) == "" || strings.TrimSpace(cfg.MachineName) == "" {
-		log.Fatal("[Agent] config.json must contain machine_name and agent_secret")
+		log.Fatal("[Agent] config.json must contain machine_name and agent_secret, or enable auto_enroll")
 	}
 	hwid := getHWID()
+	stationAgentConfig = cfg
+	stationHWID = hwid
 
 	log.Printf("[Agent] Machine Name : %s", cfg.MachineName)
 	log.Printf("[Agent] Hardware ID  : %s", hwid)
 	log.Printf("[Agent] Target Server: %s", cfg.ServerURL)
 	log.Println("[Agent] Starting WebSocket agent engine...")
 
-	interrupt := make(chan os.Signal, 1)
-	signal.Notify(interrupt, os.Interrupt, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	// Keep-alive connection loop with exponential backoff
 	backoff := 1 * time.Second
 	for {
-		connected, err := runAgentSession(cfg, hwid, interrupt)
+		connected, err := runAgentSession(ctx, cfg, hwid)
 		if err == nil {
 			// Normal clean exit
 			log.Println("[Agent] Agent exited cleanly.")
@@ -175,7 +252,10 @@ func main() {
 		}
 
 		log.Printf("[Agent] Connection error: %v. Reconnecting in %v...", err, backoff)
-		time.Sleep(backoff)
+		if !waitForReconnect(ctx, backoff) {
+			log.Println("[Agent] Interrupt received. Exiting...")
+			return
+		}
 		backoff *= 2
 		if backoff > 30*time.Second {
 			backoff = 30 * time.Second
@@ -183,7 +263,18 @@ func main() {
 	}
 }
 
-func runAgentSession(cfg *Config, hwid string, interrupt chan os.Signal) (bool, error) {
+func waitForReconnect(ctx context.Context, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+func runAgentSession(ctx context.Context, cfg *Config, hwid string) (bool, error) {
 	u, err := url.Parse(cfg.ServerURL)
 	if err != nil {
 		return false, fmt.Errorf("invalid server URL: %w", err)
@@ -193,6 +284,12 @@ func runAgentSession(cfg *Config, hwid string, interrupt chan os.Signal) (bool, 
 	}
 	if u.Scheme == "ws" && !isLoopbackHost(u.Hostname()) {
 		return false, fmt.Errorf("unencrypted ws:// is allowed only for localhost; use wss:// for remote servers")
+	}
+	if cfg.AutoEnroll && !cfg.enrollmentApproved {
+		if err := enrollAgent(ctx, cfg, hwid); err != nil {
+			return false, err
+		}
+		cfg.enrollmentApproved = true
 	}
 
 	q := u.Query()
@@ -204,11 +301,18 @@ func runAgentSession(cfg *Config, hwid string, interrupt chan os.Signal) (bool, 
 	requestHeader.Set("X-Agent-Secret", cfg.AgentSecret)
 
 	log.Printf("[WS] Connecting to %s...", u.String())
-	c, _, err := websocket.DefaultDialer.Dial(u.String(), requestHeader)
+	c, _, err := websocket.DefaultDialer.DialContext(ctx, u.String(), requestHeader)
 	if err != nil {
 		return false, err
 	}
-	defer c.Close()
+	defer func() {
+		_ = c.Close()
+		setStationAuthMode("connecting")
+		setStationLocked(true)
+	}()
+	if err := setupAgentKeepalive(c, agentReadTimeout); err != nil {
+		return true, fmt.Errorf("set WebSocket read deadline: %w", err)
+	}
 
 	log.Println("[WS] Connected to Server successfully!")
 
@@ -240,15 +344,27 @@ func runAgentSession(cfg *Config, hwid string, interrupt chan os.Signal) (bool, 
 	}()
 
 	// Heartbeat / Ping ticker
-	interval := cfg.PingIntervalSeconds
-	if interval <= 0 {
-		interval = 15
-	}
-	ticker := time.NewTicker(time.Duration(interval) * time.Second)
+	ticker := time.NewTicker(heartbeatInterval(cfg.PingIntervalSeconds))
 	defer ticker.Stop()
+	updateTicker := time.NewTicker(time.Minute)
+	defer updateTicker.Stop()
+	updateNow := time.NewTimer(time.Second)
+	defer updateNow.Stop()
 
 	for {
 		select {
+		case <-updateNow.C:
+			if started, err := checkForAgentUpdate(ctx, cfg, hwid); err != nil {
+				log.Printf("[Update] Check failed: %v", err)
+			} else if started {
+				return true, nil
+			}
+		case <-updateTicker.C:
+			if started, err := checkForAgentUpdate(ctx, cfg, hwid); err != nil {
+				log.Printf("[Update] Check failed: %v", err)
+			} else if started {
+				return true, nil
+			}
 		case <-done:
 			return true, fmt.Errorf("connection closed by server")
 		case <-ticker.C:
@@ -262,12 +378,35 @@ func runAgentSession(cfg *Config, hwid string, interrupt chan os.Signal) (bool, 
 				log.Printf("[WS] Failed to write ping: %v", err)
 				return true, err
 			}
-		case <-interrupt:
+		case <-ctx.Done():
 			log.Println("[Agent] Interrupt received. Disconnecting...")
 			_ = c.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "Agent shutdown"))
 			return true, nil
 		}
 	}
+}
+
+func heartbeatInterval(seconds int) time.Duration {
+	if seconds <= 0 {
+		seconds = 15
+	}
+	if seconds > maxPingIntervalSeconds {
+		seconds = maxPingIntervalSeconds
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+func setupAgentKeepalive(c *websocket.Conn, readTimeout time.Duration) error {
+	if err := c.SetReadDeadline(time.Now().Add(readTimeout)); err != nil {
+		return err
+	}
+	c.SetPingHandler(func(appData string) error {
+		if err := c.SetReadDeadline(time.Now().Add(readTimeout)); err != nil {
+			return err
+		}
+		return c.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(agentPongWriteTimeout))
+	})
+	return nil
 }
 
 // verifyCommand validates the HMAC-SHA256 signature and freshness of a command.
@@ -307,6 +446,11 @@ func handleServerCommand(cmd CommandMessage) {
 
 	switch strings.ToUpper(cmd.Action) {
 	case "LOCK":
+		mode := "account"
+		if requestedMode, ok := cmd.Data["auth_mode"].(string); ok {
+			mode = requestedMode
+		}
+		setStationAuthMode(mode)
 		setStationLocked(true)
 	case "UNLOCK":
 		setStationLocked(false)
@@ -335,8 +479,6 @@ func runStationLockOverlay(ready chan<- error) {
 	runtime.LockOSThread()
 	className, _ := syscall.UTF16PtrFromString("AUCCStationLockOverlay")
 	windowTitle, _ := syscall.UTF16PtrFromString("Station locked")
-	text, _ := syscall.UTF16FromString("This station is locked by the lab administrator.\nPlease contact staff to start a session.")
-	stationLockOverlayText = text[:len(text)-1]
 	stationLockOverlayProc = syscall.NewCallback(stationLockOverlayWindowProc)
 
 	instance, _, callErr := procGetModuleHandleW.Call(0)
@@ -386,6 +528,11 @@ func runStationLockOverlay(ready chan<- error) {
 		return
 	}
 	stationLockOverlayWindow = window
+	if err := createStationAuthControls(window, width, height, instance); err != nil {
+		ready <- err
+		return
+	}
+	applyStationAuthMode("connecting")
 	ready <- nil
 
 	var message stationLockMessage
@@ -408,6 +555,330 @@ func systemMetric(index int32) uintptr {
 	return value
 }
 
+func createStationAuthControls(parent uintptr, width, height int32, instance uintptr) error {
+	centerX, centerY := width/2, height/2
+	stationAuthFont, _, _ = procCreateFontW.Call(20, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 4, 0, uintptr(unsafe.Pointer(mustUTF16("Segoe UI"))))
+	if stationAuthFont == 0 {
+		stationAuthFont, _, _ = procGetStockObject.Call(17)
+	}
+
+	var err error
+	stationTitleControl, err = createStationControl(parent, instance, "STATIC", "AUCC Station Login", wsChild|wsVisible|ssCenter, 0, 0, centerX-300, centerY-205, 600, 52)
+	if err != nil {
+		return err
+	}
+	procSendMessageW.Call(stationTitleControl, wmSetFont, stationLockOverlayFont, 1)
+
+	stationAccountLabel, err = createStationControl(parent, instance, "STATIC", "Username", wsChild|wsVisible, 0, 0, centerX-180, centerY-126, 360, 26)
+	if err != nil {
+		return err
+	}
+	stationUsernameControl, err = createStationControl(parent, instance, "EDIT", "", wsChild|wsVisible|wsTabStop|wsBorder|esAutoHScroll, 0, 0, centerX-180, centerY-100, 360, 36)
+	if err != nil {
+		return err
+	}
+	stationPasswordLabel, err = createStationControl(parent, instance, "STATIC", "Password", wsChild|wsVisible, 0, 0, centerX-180, centerY-52, 360, 26)
+	if err != nil {
+		return err
+	}
+	stationPasswordControl, err = createStationControl(parent, instance, "EDIT", "", wsChild|wsVisible|wsTabStop|wsBorder|esAutoHScroll|esPassword, 0, 0, centerX-180, centerY-26, 360, 36)
+	if err != nil {
+		return err
+	}
+	stationCodeLabel, err = createStationControl(parent, instance, "STATIC", "Booking access code", wsChild|wsVisible, 0, 0, centerX-180, centerY-74, 360, 26)
+	if err != nil {
+		return err
+	}
+	stationAccessCodeControl, err = createStationControl(parent, instance, "EDIT", "", wsChild|wsVisible|wsTabStop|wsBorder|esAutoHScroll, 0, 0, centerX-120, centerY-48, 240, 38)
+	if err != nil {
+		return err
+	}
+	stationSubmitControl, err = createStationControl(parent, instance, "BUTTON", "Sign in", wsChild|wsVisible|wsTabStop|bsDefault, 0, stationLoginButtonID, centerX-80, centerY+48, 160, 42)
+	if err != nil {
+		return err
+	}
+	stationStatusControl, err = createStationControl(parent, instance, "STATIC", "", wsChild|wsVisible|ssCenter, 0, 0, centerX-300, centerY+104, 600, 40)
+	if err != nil {
+		return err
+	}
+
+	for _, control := range []uintptr{stationAccountLabel, stationUsernameControl, stationPasswordLabel, stationPasswordControl, stationCodeLabel, stationAccessCodeControl, stationSubmitControl, stationStatusControl} {
+		procSendMessageW.Call(control, wmSetFont, stationAuthFont, 1)
+	}
+	return nil
+}
+
+func createStationControl(parent, instance uintptr, className, title string, style, extendedStyle, controlID uintptr, x, y, width, height int32) (uintptr, error) {
+	class, err := syscall.UTF16PtrFromString(className)
+	if err != nil {
+		return 0, err
+	}
+	text, err := syscall.UTF16PtrFromString(title)
+	if err != nil {
+		return 0, err
+	}
+	window, _, callErr := procCreateWindowExW.Call(
+		extendedStyle,
+		uintptr(unsafe.Pointer(class)), uintptr(unsafe.Pointer(text)), style,
+		uintptr(x), uintptr(y), uintptr(width), uintptr(height), parent, controlID, instance, 0,
+	)
+	if window == 0 {
+		return 0, windowsCallError("CreateWindowExW control", callErr)
+	}
+	return window, nil
+}
+
+func mustUTF16(value string) *uint16 {
+	ptr, err := syscall.UTF16PtrFromString(value)
+	if err != nil {
+		return nil
+	}
+	return ptr
+}
+
+func setStationAuthMode(mode string) {
+	if stationLockOverlayWindow == 0 {
+		return
+	}
+	code := uintptr(authModeConnecting)
+	switch mode {
+	case "account":
+		code = authModeAccount
+	case "access_code":
+		code = authModeAccessCode
+	}
+	if result, _, callErr := procPostMessageW.Call(stationLockOverlayWindow, wmAppAuthMode, code, 0); result == 0 {
+		log.Printf("[Overlay] Could not update authentication mode: %v", windowsCallError("PostMessageW", callErr))
+	}
+}
+
+func applyStationAuthMode(mode string) {
+	previousMode := stationAuthMode
+	stationAuthMode = mode
+	if previousMode != mode {
+		if mode != "account" {
+			setStationControlText(stationUsernameControl, "")
+			setStationControlText(stationPasswordControl, "")
+		}
+		if mode != "access_code" {
+			setStationControlText(stationAccessCodeControl, "")
+		}
+	}
+	setControlVisible(stationAccountLabel, mode == "account")
+	setControlVisible(stationUsernameControl, mode == "account")
+	setControlVisible(stationPasswordLabel, mode == "account")
+	setControlVisible(stationPasswordControl, mode == "account")
+	setControlVisible(stationCodeLabel, mode == "access_code")
+	setControlVisible(stationAccessCodeControl, mode == "access_code")
+	setControlVisible(stationSubmitControl, mode == "account" || mode == "access_code")
+	if shouldEnableStationLoginButton(mode, stationLoginPending) {
+		procEnableWindow.Call(stationSubmitControl, 1)
+	} else {
+		procEnableWindow.Call(stationSubmitControl, 0)
+	}
+	setStationControlText(stationSubmitControl, "Sign in")
+	setStationControlText(stationStatusControl, "Connecting to booking server...")
+	if mode == "account" {
+		setStationControlText(stationTitleControl, "Sign in to this station")
+		setStationControlText(stationSubmitControl, "Sign in")
+		setStationControlText(stationStatusControl, "No active reservation. Use your username and password.")
+		procSetFocus.Call(stationUsernameControl)
+	} else if mode == "access_code" {
+		setStationControlText(stationTitleControl, "This station is reserved")
+		setStationControlText(stationSubmitControl, "Enter station")
+		setStationControlText(stationStatusControl, "Enter the six-digit code for this station.")
+		procSetFocus.Call(stationAccessCodeControl)
+	} else {
+		setStationControlText(stationTitleControl, "AUCC Station Login")
+	}
+}
+
+func shouldEnableStationLoginButton(mode string, pending bool) bool {
+	return !pending && (mode == "account" || mode == "access_code")
+}
+
+func setControlVisible(control uintptr, visible bool) {
+	if control == 0 {
+		return
+	}
+	state := uintptr(swHide)
+	if visible {
+		state = swShow
+	}
+	procShowWindow.Call(control, state)
+}
+
+func setStationControlText(control uintptr, value string) {
+	if control == 0 {
+		return
+	}
+	text, err := syscall.UTF16PtrFromString(value)
+	if err == nil {
+		procSetWindowTextW.Call(control, uintptr(unsafe.Pointer(text)))
+	}
+}
+
+func stationControlText(control uintptr) string {
+	if control == 0 {
+		return ""
+	}
+	buffer := make([]uint16, 256)
+	procGetWindowTextW.Call(control, uintptr(unsafe.Pointer(&buffer[0])), uintptr(len(buffer)))
+	return syscall.UTF16ToString(buffer)
+}
+
+func submitStationLogin() {
+	if stationLoginPending || (stationAuthMode != "account" && stationAuthMode != "access_code") {
+		return
+	}
+	request := map[string]string{"mode": stationAuthMode}
+	if stationAuthMode == "account" {
+		request["username"] = strings.TrimSpace(stationControlText(stationUsernameControl))
+		request["password"] = stationControlText(stationPasswordControl)
+		if request["username"] == "" || request["password"] == "" {
+			setStationControlText(stationStatusControl, "Enter both username and password.")
+			return
+		}
+	} else {
+		request["access_code"] = stationControlText(stationAccessCodeControl)
+		if !validClientAccessCode(request["access_code"]) {
+			setStationControlText(stationStatusControl, "Enter the six-digit booking code.")
+			return
+		}
+	}
+	if stationAgentConfig == nil {
+		setStationControlText(stationStatusControl, "Agent configuration is not ready.")
+		return
+	}
+	stationLoginPending = true
+	procEnableWindow.Call(stationSubmitControl, 0)
+	setStationControlText(stationStatusControl, "Checking login...")
+	config := stationAgentConfig
+	hwid := stationHWID
+	go func() {
+		err := authenticateStation(config, hwid, request)
+		message := ""
+		if err != nil {
+			message = "Login failed. Check details or connection, then try again."
+		}
+		stationLoginResultMu.Lock()
+		stationLoginResult = message
+		stationLoginResultMu.Unlock()
+		code := uintptr(0)
+		if err != nil {
+			code = 1
+		}
+		procPostMessageW.Call(stationLockOverlayWindow, wmAppLoginResult, code, 0)
+	}()
+}
+
+func validClientAccessCode(code string) bool {
+	if len(code) != 6 {
+		return false
+	}
+	for _, digit := range code {
+		if digit < '0' || digit > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func authenticateStation(config *Config, hwid string, login map[string]string) error {
+	endpoint, err := stationLoginURL(config.ServerURL)
+	if err != nil {
+		return err
+	}
+	body, err := json.Marshal(login)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Computer-Name", config.MachineName)
+	request.Header.Set("X-Computer-HWID", hwid)
+	request.Header.Set("X-Agent-Secret", config.AgentSecret)
+	response, err := (&http.Client{
+		Timeout: 10 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}).Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("station login rejected with HTTP %d", response.StatusCode)
+	}
+	return nil
+}
+
+func stationLoginURL(serverURL string) (string, error) {
+	return stationAPIURL(serverURL, "/api/agent/login")
+}
+
+func stationAPIURL(serverURL, path string) (string, error) {
+	endpoint, err := url.Parse(serverURL)
+	if err != nil || endpoint.Host == "" {
+		return "", fmt.Errorf("invalid server URL")
+	}
+	switch endpoint.Scheme {
+	case "ws":
+		if !isLoopbackHost(endpoint.Hostname()) {
+			return "", fmt.Errorf("unencrypted ws:// is allowed only for localhost; use wss:// for remote servers")
+		}
+		endpoint.Scheme = "http"
+	case "wss":
+		endpoint.Scheme = "https"
+	default:
+		return "", fmt.Errorf("server URL must use ws:// or wss://")
+	}
+	endpoint.Path = path
+	endpoint.RawPath = ""
+	endpoint.RawQuery = ""
+	endpoint.Fragment = ""
+	return endpoint.String(), nil
+}
+
+func enrollAgent(ctx context.Context, cfg *Config, hwid string) error {
+	endpoint, err := stationAPIURL(cfg.ServerURL, "/api/agent/enroll")
+	if err != nil {
+		return err
+	}
+	body, err := json.Marshal(map[string]string{"name": cfg.MachineName, "hwid": hwid, "secret": cfg.AgentSecret})
+	if err != nil {
+		return err
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(requestCtx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := (&http.Client{Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}).Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	switch response.StatusCode {
+	case http.StatusOK:
+		return nil
+	case http.StatusAccepted:
+		return fmt.Errorf("waiting for administrator to approve station %s", cfg.MachineName)
+	case http.StatusConflict:
+		return fmt.Errorf("station %s conflicts with an existing registration; contact administrator", cfg.MachineName)
+	default:
+		return fmt.Errorf("station enrollment failed with HTTP %d", response.StatusCode)
+	}
+}
+
 func setStationLocked(locked bool) {
 	if stationLockOverlayWindow == 0 {
 		log.Println("[Overlay] Ignoring lock command because the overlay is unavailable.")
@@ -426,14 +897,64 @@ func stationLockOverlayWindowProc(window, message, wParam, lParam uintptr) uintp
 	switch uint32(message) {
 	case wmAppStationLock:
 		if wParam == 0 {
+			setStationControlText(stationUsernameControl, "")
+			setStationControlText(stationPasswordControl, "")
+			setStationControlText(stationAccessCodeControl, "")
 			procShowWindow.Call(window, swHide)
 			return 0
 		}
 		procShowWindow.Call(window, swShow)
 		procSetWindowPos.Call(window, ^uintptr(0), 0, 0, 0, 0, swpNoMove|swpNoSize|swpShowWindow)
 		procSetForegroundWindow.Call(window)
+		if stationAuthMode == "account" {
+			procSetFocus.Call(stationUsernameControl)
+		} else if stationAuthMode == "access_code" {
+			procSetFocus.Call(stationAccessCodeControl)
+		}
 		procInvalidateRect.Call(window, 0, 1)
 		return 0
+	case wmAppAuthMode:
+		switch wParam {
+		case authModeAccount:
+			applyStationAuthMode("account")
+		case authModeAccessCode:
+			applyStationAuthMode("access_code")
+		default:
+			applyStationAuthMode("connecting")
+		}
+		return 0
+	case wmAppLoginResult:
+		stationLoginPending = false
+		stationLoginResultMu.Lock()
+		result := stationLoginResult
+		stationLoginResultMu.Unlock()
+		if wParam == 0 {
+			setStationControlText(stationStatusControl, "Login accepted. Opening station...")
+			return 0
+		}
+		setStationControlText(stationPasswordControl, "")
+		setStationControlText(stationAccessCodeControl, "")
+		procEnableWindow.Call(stationSubmitControl, 1)
+		if result == "" {
+			result = "Login failed. Check details or connection, then try again."
+		}
+		setStationControlText(stationStatusControl, result)
+		if stationAuthMode == "account" {
+			procSetFocus.Call(stationPasswordControl)
+		} else if stationAuthMode == "access_code" {
+			procSetFocus.Call(stationAccessCodeControl)
+		}
+		return 0
+	case wmCommand:
+		if wParam&0xFFFF == stationLoginButtonID && (wParam>>16)&0xFFFF == bnClicked {
+			submitStationLogin()
+			return 0
+		}
+	case wmCtlColorStatic:
+		procSetTextColor.Call(wParam, 0x00FFFFFF)
+		procSetBkMode.Call(wParam, 1)
+		brush, _, _ := procGetStockObject.Call(4)
+		return brush
 	case wmClose:
 		return 0
 	case wmSysCommand:
@@ -452,11 +973,6 @@ func stationLockOverlayWindowProc(window, message, wParam, lParam uintptr) uintp
 		procGetClientRect.Call(window, uintptr(unsafe.Pointer(&rect)))
 		brush, _, _ := procGetStockObject.Call(4)
 		procFillRect.Call(dc, uintptr(unsafe.Pointer(&rect)), brush)
-		font, _, _ := procSelectObject.Call(dc, stationLockOverlayFont)
-		procSetTextColor.Call(dc, 0x00FFFFFF)
-		procSetBkMode.Call(dc, 1) // TRANSPARENT
-		procDrawTextW.Call(dc, uintptr(unsafe.Pointer(&stationLockOverlayText[0])), uintptr(len(stationLockOverlayText)), uintptr(unsafe.Pointer(&rect)), dtCenter|dtVCenter|dtWordWrap)
-		procSelectObject.Call(dc, font)
 		procEndPaint.Call(window, uintptr(unsafe.Pointer(&paint)))
 		return 0
 	}
@@ -523,31 +1039,88 @@ func isLoopbackHost(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-func loadConfig() *Config {
-	exePath, err := os.Executable()
-	var configPath string
-	if err == nil {
-		configPath = filepath.Join(filepath.Dir(exePath), "config.json")
-	} else {
-		configPath = "config.json"
-	}
-
+func loadConfig() (*Config, error) {
 	cfg := &Config{
 		ServerURL:           "ws://localhost:8000/api/ws/agent",
-		MachineName:         "COM-01",
 		PingIntervalSeconds: 15,
 	}
 
-	data, err := os.ReadFile(configPath)
-	if err == nil {
-		_ = json.Unmarshal(data, cfg)
-	} else {
-		// Try fallback to local config.json
-		data, err = os.ReadFile("config.json")
-		if err == nil {
-			_ = json.Unmarshal(data, cfg)
-		}
+	var paths []string
+	if localAppData := os.Getenv("LOCALAPPDATA"); localAppData != "" {
+		paths = append(paths, filepath.Join(localAppData, "AUCC Agent", "config.json"))
 	}
+	if exePath, err := os.Executable(); err == nil {
+		paths = append(paths, filepath.Join(filepath.Dir(exePath), "config.json"))
+	}
+	paths = append(paths, "config.json")
+	configPath := paths[0]
+	for _, configPath := range paths {
+		data, err := os.ReadFile(configPath)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read %s: %w", configPath, err)
+		}
+		if err := json.Unmarshal(data, cfg); err != nil {
+			return nil, fmt.Errorf("parse %s: %w", configPath, err)
+		}
+		if cfg.AutoEnroll && cfg.AgentSecret == "" {
+			return completeAutoEnrollmentConfig(cfg, configPath)
+		}
+		break
+	}
+	if cfg.AutoEnroll && cfg.AgentSecret == "" {
+		return completeAutoEnrollmentConfig(cfg, configPath)
+	}
+	if cfg.AgentSecret == "" {
+		cfg.AutoEnroll = true
+		return completeAutoEnrollmentConfig(cfg, configPath)
+	}
+	return cfg, nil
+}
 
-	return cfg
+func completeAutoEnrollmentConfig(cfg *Config, path string) (*Config, error) {
+	if cfg.MachineName == "" {
+		name, err := os.Hostname()
+		if err != nil {
+			return nil, fmt.Errorf("read computer name: %w", err)
+		}
+		cfg.MachineName = name
+	}
+	if len(cfg.MachineName) > 50 {
+		return nil, fmt.Errorf("computer name exceeds 50 bytes")
+	}
+	secret := make([]byte, 32)
+	if _, err := rand.Read(secret); err != nil {
+		return nil, fmt.Errorf("generate station credential: %w", err)
+	}
+	cfg.AgentSecret = base64.RawURLEncoding.EncodeToString(secret)
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return nil, fmt.Errorf("create station settings folder: %w", err)
+	}
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), "config-*.tmp")
+	if err != nil {
+		return nil, fmt.Errorf("create station settings: %w", err)
+	}
+	defer os.Remove(tmp.Name())
+	if err := tmp.Chmod(0600); err != nil {
+		_ = tmp.Close()
+		return nil, err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return nil, err
+	}
+	if err := tmp.Close(); err != nil {
+		return nil, err
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		return nil, fmt.Errorf("save station settings: %w", err)
+	}
+	return cfg, nil
 }

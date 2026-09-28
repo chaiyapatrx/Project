@@ -1,5 +1,7 @@
 # migrations/apply_migrations.py
+import ipaddress
 import os
+import ssl
 import sys
 import pymysql
 
@@ -102,18 +104,50 @@ def load_database_config() -> dict:
     if port < 1 or port > 65535:
         raise ValueError("DB_PORT must be between 1 and 65535")
 
-    return {
-        "host": os.environ["DB_HOST"],
+    host = os.environ["DB_HOST"]
+    config = {
+        "host": host,
         "user": os.environ["DB_USER"],
         "password": os.environ["DB_PASS"],
         "database": os.environ["DB_NAME"],
         "port": port,
     }
+    tls_context = database_tls_context(host, os.getenv("DB_TLS_CA_FILE", ""))
+    if tls_context is not None:
+        config["ssl"] = tls_context
+    return config
+
+
+def database_tls_context(host: str, ca_file: str = ""):
+    normalized_host = host.strip().strip("[]")
+    try:
+        is_loopback = ipaddress.ip_address(normalized_host).is_loopback
+    except ValueError:
+        is_loopback = normalized_host.lower() == "localhost"
+    if is_loopback:
+        return None
+
+    try:
+        context = ssl.create_default_context()
+        if ca_file:
+            context.load_verify_locations(cafile=ca_file)
+    except (OSError, ssl.SSLError):
+        raise ValueError("Unable to load verified database TLS roots") from None
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.verify_mode = ssl.CERT_REQUIRED
+    context.check_hostname = True
+    return context
 
 
 def column_exists(cursor, table: str, column: str) -> bool:
     # Identifiers are internal constants, not request/environment input.
     cursor.execute(f"SHOW COLUMNS FROM `{table}` LIKE %s", (column,))
+    return cursor.fetchone() is not None
+
+
+def index_exists(cursor, table: str, index: str) -> bool:
+    # Identifiers are internal constants, not request/environment input.
+    cursor.execute(f"SHOW INDEX FROM `{table}` WHERE Key_name = %s", (index,))
     return cursor.fetchone() is not None
 
 
@@ -143,6 +177,22 @@ def apply_migrations(cursor, connection):
             pass
         elif version == "000004" and column_exists(cursor, "computers", "agent_secret_hash"):
             pass
+        elif version == "000005" and column_exists(cursor, "usage_logs", "session_ends_at"):
+            if not index_exists(cursor, "usage_logs", "idx_usage_active_sessions"):
+                cursor.execute(
+                    "ALTER TABLE `usage_logs` ADD INDEX `idx_usage_active_sessions` "
+                    "(`computer_id`, `end_time`, `session_ends_at`)"
+                )
+        elif version == "000007":
+            # MySQL commits DDL separately. A retry must resume after any
+            # column/table already created before the ledger insert.
+            with open(os.path.join(migrations_dir, file_name), encoding="utf-8") as migration_file:
+                statements = split_sql(migration_file.read())
+            if not column_exists(cursor, "computers", "agent_version"):
+                cursor.execute(statements[0])
+            if not column_exists(cursor, "computers", "agent_update_error"):
+                cursor.execute(statements[1])
+            cursor.execute(statements[2])
         else:
             run_sql_file(cursor, os.path.join(migrations_dir, file_name))
 
@@ -158,8 +208,9 @@ def main():
         sys.exit(1)
 
     print("=== Database Migration Runner ===")
-    conn = pymysql.connect(**db_config, autocommit=False)
+    conn = None
     try:
+        conn = pymysql.connect(**db_config, autocommit=False)
         with conn.cursor() as cursor:
             init_file = os.path.join(os.path.dirname(__file__), "init_database.sql")
             run_sql_file(cursor, init_file)
@@ -168,11 +219,13 @@ def main():
         print("[+] Migration complete.")
     except Exception as e:
         print("[!] MySQL may already have committed DDL; rerun after resolving the reported error.")
-        conn.rollback()
-        print(f"[ERROR] {e}")
+        if conn is not None:
+            conn.rollback()
+        print(f"[ERROR] Migration failed ({type(e).__name__}); connection details redacted.")
         sys.exit(1)
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
 if __name__ == "__main__":

@@ -17,31 +17,41 @@ function AdminSettings() {
     const { user } = useAuth();
     const [isLoading, setIsLoading] = useState(false);
     const [toast, setToast] = useState(null);
+    const [settingsLoaded, setSettingsLoaded] = useState(false);
+    const [loadError, setLoadError] = useState("");
+    const [retryCount, setRetryCount] = useState(0);
     const [settings, setSettings] = useState({
         sessionDuration: 120,
         maintenanceMode: false
     });
 
     useEffect(() => {
+        let active = true;
         const fetchSettings = async () => {
             if (!user) return;
             try {
                 const response = await apiFetch("/api/admin/settings");
-                if (response.ok) {
-                    const data = await response.json();
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const data = await response.json();
+                if (active) {
                     setSettings({
-                        sessionDuration: parseInt(data.session_duration) || 120,
+                        sessionDuration: parseInt(data.session_duration, 10) || 120,
                         maintenanceMode: data.maintenance_mode === "true"
                     });
+                    setSettingsLoaded(true);
+                    setLoadError("");
                 }
             } catch (err) {
                 console.error("Failed to fetch settings:", err);
+                if (active) setLoadError("Unable to load saved settings. Reconnect to the server and try again before saving.");
             }
         };
         fetchSettings();
-    }, [user]);
+        return () => { active = false; };
+    }, [user, retryCount]);
 
     const handleSave = async () => {
+        if (!settingsLoaded) return;
         setIsLoading(true);
         try {
             const payload = {
@@ -80,7 +90,7 @@ function AdminSettings() {
                 <h1 className="text-lg font-bold text-slate-800">System Settings</h1>
                 <button
                     onClick={handleSave}
-                    disabled={isLoading}
+                    disabled={isLoading || !settingsLoaded}
                     className="bg-[#7c3aed] hover:bg-[#6d28d9] disabled:opacity-50 text-white px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 transition-all shadow-md shadow-purple-200"
                 >
                     {isLoading ? (
@@ -94,6 +104,13 @@ function AdminSettings() {
 
             <div className="flex-1 overflow-y-auto custom-scrollbar p-8">
                 <div className="max-w-4xl mx-auto space-y-8">
+                    {loadError && (
+                        <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700" role="alert">
+                            <p>{loadError}</p>
+                            <button onClick={() => setRetryCount(count => count + 1)} className="mt-2 font-bold underline">Try again</button>
+                        </div>
+                    )}
+                    {!settingsLoaded && !loadError && <p className="text-sm text-slate-500" role="status">Loading saved settings…</p>}
 
                     {/* Booking Rules */}
                     <div className="glass-card p-6 rounded-2xl shadow-sm">
@@ -115,6 +132,7 @@ function AdminSettings() {
                                         id="session-duration"
                                         type="range" min="30" max="240" step="30"
                                         value={settings.sessionDuration}
+                                        disabled={!settingsLoaded}
                                         onChange={(e) => setSettings({ ...settings, sessionDuration: e.target.value })}
                                         className="flex-1 accent-[#7c3aed]"
                                     />
@@ -147,6 +165,7 @@ function AdminSettings() {
                                     role="switch"
                                     aria-checked={settings.maintenanceMode}
                                     aria-label="Maintenance mode"
+                                    disabled={!settingsLoaded}
                                     onClick={() => setSettings({ ...settings, maintenanceMode: !settings.maintenanceMode })}
                                     className={`w-12 h-6 border-0 rounded-full relative cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 ${settings.maintenanceMode ? 'bg-orange-500' : 'bg-slate-300'}`}
                                 >

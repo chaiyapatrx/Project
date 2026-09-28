@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS `usage_logs` (
     `booking_id` INT NULL,
     `start_time` DATETIME NOT NULL,
     `end_time` DATETIME NULL,
+    `session_ends_at` DATETIME NULL,
     `duration_minutes` INT NOT NULL DEFAULT 0,
     `termination_reason` VARCHAR(50) NOT NULL DEFAULT 'normal',
     `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -80,6 +81,7 @@ CREATE TABLE IF NOT EXISTS `usage_logs` (
     INDEX `idx_usage_user` (`user_id`),
     INDEX `idx_usage_computer` (`computer_id`),
     INDEX `idx_usage_start_time` (`start_time`),
+    INDEX `idx_usage_active_sessions` (`computer_id`, `end_time`, `session_ends_at`),
     INDEX `idx_usage_duration` (`duration_minutes`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 

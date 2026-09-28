@@ -2,10 +2,12 @@ package handler
 
 import (
 	"database/sql"
+	"encoding/base64"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
@@ -17,6 +19,13 @@ import (
 type ComputerHandler struct {
 	db  *sqlx.DB
 	hub *hub.Hub
+}
+
+type pendingAgent struct {
+	ID        int       `db:"id" json:"id"`
+	Name      string    `db:"name" json:"name"`
+	HWID      string    `db:"hwid" json:"hwid"`
+	CreatedAt time.Time `db:"created_at" json:"created_at"`
 }
 
 func NewComputerHandler(db *sqlx.DB, hub *hub.Hub) *ComputerHandler {
@@ -56,7 +65,7 @@ func (h *ComputerHandler) ListComputers(c *gin.Context) {
 
 func (h *ComputerHandler) ListComputersAdmin(c *gin.Context) {
 	computers := make([]models.Computer, 0)
-	if err := h.db.Select(&computers, `SELECT id, name, hwid, ip_address, mac_address, status, is_active, created_at, updated_at,
+	if err := h.db.Select(&computers, `SELECT id, name, hwid, ip_address, mac_address, status, is_active, agent_version, agent_update_error, created_at, updated_at,
 		(agent_secret_hash IS NOT NULL AND agent_secret_hash <> '') AS agent_key_configured
 		FROM computers WHERE is_active = 1 ORDER BY name ASC`); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch computers"})
@@ -76,6 +85,85 @@ func (h *ComputerHandler) ListComputersAdmin(c *gin.Context) {
 	}
 	h.hub.Mu.RUnlock()
 	c.JSON(http.StatusOK, computers)
+}
+
+// EnrollAgent records a machine's self-generated credential. It cannot connect
+// or appear in booking lists until an admin approves it.
+func (h *ComputerHandler) EnrollAgent(c *gin.Context) {
+	var req struct {
+		Name   string `json:"name" binding:"required"`
+		HWID   string `json:"hwid" binding:"required"`
+		Secret string `json:"secret" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid enrollment request"})
+		return
+	}
+	req.Name = strings.TrimSpace(req.Name)
+	req.HWID = strings.TrimSpace(req.HWID)
+	secretBytes, err := base64.RawURLEncoding.DecodeString(req.Secret)
+	if req.Name == "" || len(req.Name) > 50 || req.HWID == "" || len(req.HWID) > 100 || err != nil || len(secretBytes) != 32 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid station identity or credential"})
+		return
+	}
+
+	var existing struct {
+		HWID            sql.NullString `db:"hwid"`
+		AgentSecretHash sql.NullString `db:"agent_secret_hash"`
+		IsActive        bool           `db:"is_active"`
+		PendingApproval bool           `db:"pending_approval"`
+	}
+	err = h.db.Get(&existing, "SELECT hwid, agent_secret_hash, is_active, pending_approval FROM computers WHERE name = ?", req.Name)
+	if err == nil {
+		if !existing.HWID.Valid || existing.HWID.String != req.HWID || !existing.AgentSecretHash.Valid || !auth.VerifyAgentSecret(req.Secret, existing.AgentSecretHash.String) || (!existing.IsActive && !existing.PendingApproval) {
+			c.JSON(http.StatusConflict, gin.H{"error": "Station name or hardware ID is already registered"})
+			return
+		}
+		if existing.IsActive {
+			c.JSON(http.StatusOK, gin.H{"status": "approved"})
+		} else {
+			c.JSON(http.StatusAccepted, gin.H{"status": "pending"})
+		}
+		return
+	}
+	if err != sql.ErrNoRows {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check station enrollment"})
+		return
+	}
+	_, err = h.db.Exec("INSERT INTO computers (name, hwid, agent_secret_hash, status, is_active, pending_approval) VALUES (?, ?, ?, 'disabled', 0, 1)", req.Name, req.HWID, auth.HashAgentSecret(req.Secret))
+	if err != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": "Station name or hardware ID is already registered"})
+		return
+	}
+	c.JSON(http.StatusAccepted, gin.H{"status": "pending"})
+}
+
+func (h *ComputerHandler) ListPendingAgents(c *gin.Context) {
+	pending := make([]pendingAgent, 0)
+	if err := h.db.Select(&pending, "SELECT id, name, hwid, created_at FROM computers WHERE pending_approval = 1 AND is_active = 0 ORDER BY created_at DESC"); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load pending stations"})
+		return
+	}
+	c.JSON(http.StatusOK, pending)
+}
+
+func (h *ComputerHandler) ApproveAgent(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil || id <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid station ID"})
+		return
+	}
+	result, err := h.db.Exec("UPDATE computers SET is_active = 1, pending_approval = 0, status = 'available' WHERE id = ? AND pending_approval = 1 AND is_active = 0", id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to approve station"})
+		return
+	}
+	if rows, _ := result.RowsAffected(); rows != 1 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Pending station not found"})
+		return
+	}
+	recordAudit(c, h.db, "agent_enrollment_approved", "computer", strconv.Itoa(id), "Admin approved agent enrollment")
+	c.JSON(http.StatusOK, gin.H{"status": "approved"})
 }
 
 func (h *ComputerHandler) CreateComputer(c *gin.Context) {
@@ -248,6 +336,17 @@ func (h *ComputerHandler) UpdateComputer(c *gin.Context) {
 			c.JSON(http.StatusConflict, gin.H{"error": "End active bookings before changing this station status"})
 			return
 		}
+		var activeUsage int
+		if err := tx.Get(&activeUsage, "SELECT COUNT(*) FROM usage_logs WHERE computer_id = ? AND booking_id IS NULL AND end_time IS NULL", id); err != nil {
+			_ = tx.Rollback()
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check current station session"})
+			return
+		}
+		if activeUsage > 0 {
+			_ = tx.Rollback()
+			c.JSON(http.StatusConflict, gin.H{"error": "End the current station session before changing status"})
+			return
+		}
 	}
 	if _, err := tx.Exec("UPDATE computers SET status = ? WHERE id = ?", newStatus, id); err != nil {
 		_ = tx.Rollback()
@@ -303,6 +402,17 @@ func (h *ComputerHandler) DeleteComputer(c *gin.Context) {
 	if activeBookings > 0 {
 		_ = tx.Rollback()
 		c.JSON(http.StatusConflict, gin.H{"error": "Cancel active bookings before deactivating this station"})
+		return
+	}
+	var activeUsage int
+	if err := tx.Get(&activeUsage, "SELECT COUNT(*) FROM usage_logs WHERE computer_id = ? AND booking_id IS NULL AND end_time IS NULL", id); err != nil {
+		_ = tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check current station session"})
+		return
+	}
+	if activeUsage > 0 {
+		_ = tx.Rollback()
+		c.JSON(http.StatusConflict, gin.H{"error": "End the current station session before deactivating this computer"})
 		return
 	}
 
@@ -362,25 +472,15 @@ func (h *ComputerHandler) SendCommand(c *gin.Context) {
 	userRole := c.GetString("role")
 	userID := c.GetInt("user_id")
 
-	// Authorization Check:
-	// Admin and Staff can send any command (LOCK, UNLOCK, REBOOT, SHUTDOWN)
-	// Normal students/users can ONLY send UNLOCK to a computer they currently have an active booking on!
+	// Only admins may send REBOOT or SHUTDOWN. Booking owners authenticate at
+	// the station with an access code; they cannot bypass it with UNLOCK.
 	if (command == "SHUTDOWN" || command == "REBOOT") && userRole != "admin" {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Only admins may shut down or restart a station"})
 		return
 	}
 	if userRole != "admin" && userRole != "staff" {
-		if command != "UNLOCK" {
-			c.JSON(http.StatusForbidden, gin.H{"error": "Students are only permitted to unlock their assigned station"})
-			return
-		}
-
-		var hasBooking int
-		err := h.db.Get(&hasBooking, "SELECT COUNT(*) FROM bookings WHERE computer_id = ? AND user_id = ? AND status = 'active'", id, userID)
-		if err != nil || hasBooking == 0 {
-			c.JSON(http.StatusForbidden, gin.H{"error": "You do not have an active booking on this computer"})
-			return
-		}
+		c.JSON(http.StatusForbidden, gin.H{"error": "Only staff may send station commands; sign in at the station"})
+		return
 	}
 
 	// Dispatch instantly via Go Hub (Latency < 2ms)
@@ -399,8 +499,14 @@ func (h *ComputerHandler) SendCommand(c *gin.Context) {
 		userID, req.Command, targetType, targetID, ip, details,
 	)
 
-	c.JSON(http.StatusOK, gin.H{
-		"message":   "Command dispatched",
+	status := http.StatusOK
+	message := "Command dispatched"
+	if !success {
+		status = http.StatusServiceUnavailable
+		message = "Command was not delivered"
+	}
+	c.JSON(status, gin.H{
+		"message":   message,
 		"delivered": success,
 		"computer":  comp.Name,
 		"command":   command,

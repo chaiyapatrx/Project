@@ -45,8 +45,9 @@ func StartSessionWorker(db *sqlx.DB, h *hub.Hub) func() {
 // which previously caused a deadlock when a session expired.
 type expiredSession struct {
 	compName   string
+	bookingID  int
+	usageLogID int
 	userID     int
-	sessionEnd time.Time
 }
 
 func (w *SessionWorker) checkExpiredSessions() {
@@ -62,7 +63,7 @@ func (w *SessionWorker) checkExpiredSessions() {
 			if state.CurrentUserID != nil {
 				userID = *state.CurrentUserID
 			}
-			expired = append(expired, expiredSession{compName: compName, userID: userID, sessionEnd: *state.SessionEndsAt})
+			expired = append(expired, expiredSession{compName: compName, bookingID: state.CurrentBookingID, usageLogID: state.CurrentUsageLogID, userID: userID})
 		}
 	}
 	w.hub.Mu.Unlock()
@@ -70,8 +71,115 @@ func (w *SessionWorker) checkExpiredSessions() {
 	// Phase 2: persist each expiration and send LOCK while its computer row is locked.
 	for _, e := range expired {
 		log.Printf("[Worker] Session EXPIRED for %s (User ID: %d). Forcing Lock...", e.compName, e.userID)
-		w.expireSession(e, now)
+		if e.usageLogID > 0 {
+			w.expireWalkInSession(e, now)
+		} else {
+			w.expireSession(e, now)
+		}
 	}
+}
+
+func (w *SessionWorker) expireWalkInSession(expired expiredSession, now time.Time) {
+	tx, err := w.db.Beginx()
+	if err != nil {
+		log.Printf("[Worker] Transaction start error for %s: %v", expired.compName, err)
+		return
+	}
+	defer tx.Rollback()
+
+	var computerID int
+	if err := tx.Get(&computerID, "SELECT id FROM computers WHERE name = ? FOR UPDATE", expired.compName); err != nil {
+		log.Printf("[Worker] Failed to lock computer %s: %v", expired.compName, err)
+		return
+	}
+	var session struct {
+		UserID        int          `db:"user_id"`
+		StartTime     time.Time    `db:"start_time"`
+		SessionEndsAt sql.NullTime `db:"session_ends_at"`
+	}
+	err = tx.Get(&session, `
+		SELECT user_id, start_time, session_ends_at FROM usage_logs
+		WHERE id = ? AND computer_id = ? AND booking_id IS NULL AND end_time IS NULL FOR UPDATE`, expired.usageLogID, computerID)
+	if err == sql.ErrNoRows {
+		var active int
+		if err := tx.Get(&active, `SELECT
+			(SELECT COUNT(*) FROM bookings WHERE computer_id = ? AND status IN ('pending', 'active')) +
+			(SELECT COUNT(*) FROM usage_logs WHERE computer_id = ? AND booking_id IS NULL AND end_time IS NULL)`, computerID, computerID); err != nil {
+			log.Printf("[Worker] Failed to check replacement session for %s: %v", expired.compName, err)
+			return
+		}
+		if active > 0 {
+			return
+		}
+		if _, err := tx.Exec("UPDATE computers SET status = 'available' WHERE id = ? AND status = 'in_use'", computerID); err != nil {
+			log.Printf("[Worker] Failed to release stale computer %s: %v", expired.compName, err)
+			return
+		}
+		if !w.hub.SendCommandToAgent(expired.compName, "LOCK", map[string]interface{}{"reason": "session_expired", "auth_mode": "account"}) {
+			w.hub.DisconnectAgent(expired.compName)
+		}
+	} else if err != nil {
+		log.Printf("[Worker] Failed to read usage session for %s: %v", expired.compName, err)
+		return
+	} else {
+		if session.SessionEndsAt.Valid && session.SessionEndsAt.Time.After(now) {
+			end := session.SessionEndsAt.Time
+			w.hub.Mu.Lock()
+			if state := w.hub.Computers[expired.compName]; state != nil && state.CurrentUsageLogID == expired.usageLogID {
+				state.SessionEndsAt = &end
+			}
+			w.hub.Mu.Unlock()
+			return
+		}
+		duration := int(now.Sub(session.StartTime).Minutes())
+		if duration < 1 {
+			duration = 1
+		}
+		result, err := tx.Exec(`
+			UPDATE usage_logs SET end_time = ?, session_ends_at = NULL, duration_minutes = ?, termination_reason = 'timeout'
+			WHERE id = ? AND end_time IS NULL`, now, duration, expired.usageLogID)
+		if err != nil {
+			log.Printf("[Worker] Failed to close usage session for %s: %v", expired.compName, err)
+			return
+		}
+		changed, err := result.RowsAffected()
+		if err != nil || changed != 1 {
+			return
+		}
+		var active int
+		if err := tx.Get(&active, `SELECT
+			(SELECT COUNT(*) FROM bookings WHERE computer_id = ? AND status IN ('pending', 'active')) +
+			(SELECT COUNT(*) FROM usage_logs WHERE computer_id = ? AND booking_id IS NULL AND end_time IS NULL)`, computerID, computerID); err != nil {
+			log.Printf("[Worker] Failed to check replacement session for %s: %v", expired.compName, err)
+			return
+		}
+		if active == 0 {
+			if _, err := tx.Exec("UPDATE computers SET status = 'available' WHERE id = ? AND status = 'in_use'", computerID); err != nil {
+				log.Printf("[Worker] Failed to release computer %s: %v", expired.compName, err)
+				return
+			}
+			if !w.hub.SendCommandToAgent(expired.compName, "LOCK", map[string]interface{}{"reason": "session_expired", "auth_mode": "account"}) {
+				w.hub.DisconnectAgent(expired.compName)
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		w.hub.DisconnectAgent(expired.compName)
+		log.Printf("[Worker] Transaction commit failed for %s: %v", expired.compName, err)
+		return
+	}
+
+	w.hub.Mu.Lock()
+	if state := w.hub.Computers[expired.compName]; state != nil && state.CurrentUsageLogID == expired.usageLogID {
+		state.Status = "available"
+		state.CurrentBookingID = 0
+		state.CurrentUsageLogID = 0
+		state.CurrentUserID = nil
+		state.CurrentUserName = nil
+		state.SessionEndsAt = nil
+	}
+	w.hub.Mu.Unlock()
+	w.hub.BroadcastStateChange(expired.compName)
 }
 
 func (w *SessionWorker) expireSession(expired expiredSession, now time.Time) {
@@ -93,7 +201,7 @@ func (w *SessionWorker) expireSession(expired expiredSession, now time.Time) {
 		StartTime time.Time `db:"start_time"`
 		EndTime   time.Time `db:"end_time"`
 	}
-	err = tx.Get(&booking, "SELECT id, user_id, start_time, end_time FROM bookings WHERE computer_id = ? AND user_id = ? AND status = 'active' ORDER BY id DESC LIMIT 1 FOR UPDATE", computerID, expired.userID)
+	err = tx.Get(&booking, "SELECT id, user_id, start_time, end_time FROM bookings WHERE id = ? AND computer_id = ? AND status = 'active' FOR UPDATE", expired.bookingID, computerID)
 	if err == sql.ErrNoRows {
 		var activeBookings int
 		if err := tx.Get(&activeBookings, "SELECT COUNT(*) FROM bookings WHERE computer_id = ? AND status = 'active'", computerID); err != nil {
@@ -109,8 +217,12 @@ func (w *SessionWorker) expireSession(expired expiredSession, now time.Time) {
 				log.Printf("[Worker] Failed to release stale computer %s: %v", expired.compName, err)
 				return
 			}
+			if !w.hub.SendCommandToAgent(expired.compName, "LOCK", map[string]interface{}{"reason": "session_expired", "auth_mode": "account"}) {
+				w.hub.DisconnectAgent(expired.compName)
+			}
 		}
 		if err := tx.Commit(); err != nil {
+			w.hub.DisconnectAgent(expired.compName)
 			log.Printf("[Worker] Transaction commit failed for %s: %v", expired.compName, err)
 			return
 		}
@@ -120,7 +232,7 @@ func (w *SessionWorker) expireSession(expired expiredSession, now time.Time) {
 	} else if booking.EndTime.After(now) {
 		end := booking.EndTime
 		w.hub.Mu.Lock()
-		if state := w.hub.Computers[expired.compName]; state != nil && state.CurrentUserID != nil && *state.CurrentUserID == expired.userID {
+		if state := w.hub.Computers[expired.compName]; state != nil && hub.MatchesBookingID(state.CurrentBookingID, expired.bookingID) {
 			state.SessionEndsAt = &end
 		}
 		w.hub.Mu.Unlock()
@@ -153,16 +265,21 @@ func (w *SessionWorker) expireSession(expired expiredSession, now time.Time) {
 			log.Printf("[Worker] Failed to release computer %s: %v", expired.compName, err)
 			return
 		}
-		w.hub.SendCommandToAgent(expired.compName, "LOCK", map[string]interface{}{"reason": "session_expired"})
+		if !w.hub.SendCommandToAgent(expired.compName, "LOCK", map[string]interface{}{"reason": "session_expired", "auth_mode": "account"}) {
+			w.hub.DisconnectAgent(expired.compName)
+		}
 		if err := tx.Commit(); err != nil {
+			w.hub.DisconnectAgent(expired.compName)
 			log.Printf("[Worker] Transaction commit failed for %s: %v", expired.compName, err)
 			return
 		}
 	}
 
 	w.hub.Mu.Lock()
-	if state := w.hub.Computers[expired.compName]; state != nil && state.SessionEndsAt != nil && state.SessionEndsAt.Equal(expired.sessionEnd) && (state.CurrentUserID == nil || *state.CurrentUserID == expired.userID) {
+	if state := w.hub.Computers[expired.compName]; state != nil && hub.MatchesBookingID(state.CurrentBookingID, expired.bookingID) {
 		state.Status = "available"
+		state.CurrentBookingID = 0
+		state.CurrentUsageLogID = 0
 		state.CurrentUserID = nil
 		state.CurrentUserName = nil
 		state.SessionEndsAt = nil

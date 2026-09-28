@@ -1,10 +1,11 @@
 @echo off
+cd /d "%~dp0"
 echo ===================================================
 echo Building Standalone Windows Client Agent (.exe)
 echo ===================================================
 go mod tidy
 if errorlevel 1 goto :error
-go build -ldflags="-s -w" -o agent.exe main.go
+go build -ldflags="-s -w" -o agent.exe .
 if errorlevel 1 goto :error
 echo.
 if exist agent.exe (

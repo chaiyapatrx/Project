@@ -10,6 +10,10 @@
 /backend-go/.env
 /.claude/settings.local.json
 /client-go/config.json
+/client-go/dist/
+/agent-releases/
+/backend-go/agent-releases/
+/client-go/AUCCAgent-update-failed.txt
 agent_config.json
 
 # Binaries & Executables

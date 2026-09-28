@@ -16,18 +16,20 @@ import (
 
 // In-Memory Computer State
 type ComputerRuntimeState struct {
-	ID              int             `json:"id"`
-	Name            string          `json:"name"`
-	HWID            string          `json:"hwid"`
-	IPAddress       string          `json:"ip_address"`
-	Status          string          `json:"status"` // available, in_use, maintenance, disabled
-	IsOnline        bool            `json:"is_online"`
-	CurrentUserID   *int            `json:"current_user_id,omitempty"`
-	CurrentUserName *string         `json:"current_user_name,omitempty"`
-	SessionEndsAt   *time.Time      `json:"session_ends_at,omitempty"`
-	LastPing        time.Time       `json:"last_ping"`
-	AgentConn       *websocket.Conn `json:"-"`
-	AgentSecret     string          `json:"-"`
+	ID                int             `json:"id"`
+	Name              string          `json:"name"`
+	HWID              string          `json:"hwid"`
+	IPAddress         string          `json:"ip_address"`
+	Status            string          `json:"status"` // available, in_use, maintenance, disabled
+	IsOnline          bool            `json:"is_online"`
+	CurrentBookingID  int             `json:"-"`
+	CurrentUsageLogID int             `json:"-"`
+	CurrentUserID     *int            `json:"current_user_id,omitempty"`
+	CurrentUserName   *string         `json:"current_user_name,omitempty"`
+	SessionEndsAt     *time.Time      `json:"session_ends_at,omitempty"`
+	LastPing          time.Time       `json:"last_ping"`
+	AgentConn         *websocket.Conn `json:"-"`
+	AgentSecret       string          `json:"-"`
 }
 
 // ComputerStatus contains only fields safe to broadcast to authenticated web clients.
@@ -38,6 +40,10 @@ type ComputerStatus struct {
 	IsOnline        bool       `json:"is_online"`
 	CurrentUserName *string    `json:"current_user_name,omitempty"`
 	SessionEndsAt   *time.Time `json:"session_ends_at,omitempty"`
+}
+
+func MatchesBookingID(currentBookingID, bookingID int) bool {
+	return bookingID > 0 && currentBookingID == bookingID
 }
 
 func publicStatus(state *ComputerRuntimeState) ComputerStatus {
@@ -140,7 +146,7 @@ func signCommand(secret, command string, ts int64, data map[string]interface{}) 
 	return payload
 }
 
-// RegisterAgent handles incoming agent connections and sets ID atomically before broadcast
+// RegisterAgent handles incoming agent connections and updates the Hub state atomically.
 func (h *Hub) RegisterAgent(name, hwid, ip string, compID int, secret string, conn *websocket.Conn) *ComputerRuntimeState {
 	h.Mu.Lock()
 
@@ -168,7 +174,6 @@ func (h *Hub) RegisterAgent(name, hwid, ip string, compID int, secret string, co
 	if previousConn != nil && previousConn != conn {
 		_ = previousConn.Close()
 	}
-	go h.BroadcastStateChange(name)
 	log.Printf("[Hub] Agent connected: %s (ID: %d, HWID: %s, IP: %s)", name, compID, hwid, ip)
 	return state
 }
@@ -224,9 +229,11 @@ func (h *Hub) SendCommandToAgent(name string, command string, data map[string]in
 	state, exists := h.Computers[name]
 	var conn *websocket.Conn
 	var secret string
+	var hasBooking bool
 	if exists {
 		conn = state.AgentConn
 		secret = state.AgentSecret
+		hasBooking = state.CurrentBookingID > 0
 	}
 	h.Mu.RUnlock()
 
@@ -235,7 +242,7 @@ func (h *Hub) SendCommandToAgent(name string, command string, data map[string]in
 		return false
 	}
 
-	payload := signCommand(secret, command, time.Now().Unix(), data)
+	payload := signCommand(secret, command, time.Now().Unix(), lockAuthData(command, data, hasBooking))
 	msg, err := json.Marshal(payload)
 	if err != nil {
 		return false
@@ -248,6 +255,35 @@ func (h *Hub) SendCommandToAgent(name string, command string, data map[string]in
 
 	log.Printf("[Hub] Command '%s' dispatched instantly to %s", command, name)
 	return true
+}
+
+func lockAuthData(command string, data map[string]interface{}, hasBooking bool) map[string]interface{} {
+	if command != "LOCK" {
+		return data
+	}
+	mode, ok := data["auth_mode"].(string)
+	if ok && (mode == "account" || mode == "access_code") {
+		return data
+	}
+	if data != nil {
+		data = copyCommandData(data)
+	} else {
+		data = make(map[string]interface{}, 1)
+	}
+	if hasBooking {
+		data["auth_mode"] = "access_code"
+	} else {
+		data["auth_mode"] = "account"
+	}
+	return data
+}
+
+func copyCommandData(data map[string]interface{}) map[string]interface{} {
+	copy := make(map[string]interface{}, len(data)+1)
+	for key, value := range data {
+		copy[key] = value
+	}
+	return copy
 }
 
 // RegisterWebClient adds a browser monitor client
@@ -281,15 +317,16 @@ func (h *Hub) PingWebClient(conn *websocket.Conn) error {
 // BroadcastCommandToAllAgents sends a command to every online agent concurrently without blocking Hub Mutex
 func (h *Hub) BroadcastCommandToAllAgents(command string, data map[string]interface{}) int {
 	type agentConn struct {
-		name   string
-		conn   *websocket.Conn
-		secret string
+		name    string
+		conn    *websocket.Conn
+		secret  string
+		booking bool
 	}
 	h.Mu.RLock()
 	onlineAgents := make([]agentConn, 0, len(h.Computers))
 	for name, state := range h.Computers {
 		if state.IsOnline && state.AgentConn != nil && state.AgentSecret != "" {
-			onlineAgents = append(onlineAgents, agentConn{name: name, conn: state.AgentConn, secret: state.AgentSecret})
+			onlineAgents = append(onlineAgents, agentConn{name: name, conn: state.AgentConn, secret: state.AgentSecret, booking: state.CurrentBookingID > 0})
 		}
 	}
 	h.Mu.RUnlock()
@@ -301,7 +338,7 @@ func (h *Hub) BroadcastCommandToAllAgents(command string, data map[string]interf
 		wg.Add(1)
 		go func(agent agentConn) {
 			defer wg.Done()
-			payload := signCommand(agent.secret, command, time.Now().Unix(), data)
+			payload := signCommand(agent.secret, command, time.Now().Unix(), lockAuthData(command, data, agent.booking))
 			msg, err := json.Marshal(payload)
 			if err != nil {
 				return

@@ -466,6 +466,24 @@ func (h *AuthHandler) DeleteUser(c *gin.Context) {
 			return
 		}
 	}
+	var activeBookings int
+	if err := tx.Get(&activeBookings, "SELECT COUNT(*) FROM bookings WHERE user_id = ? AND status IN ('pending', 'active')", userID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check active bookings"})
+		return
+	}
+	if activeBookings > 0 {
+		c.JSON(http.StatusConflict, gin.H{"error": "End the user's active bookings before deactivating the account"})
+		return
+	}
+	var activeWalkInSessions int
+	if err := tx.Get(&activeWalkInSessions, "SELECT COUNT(*) FROM usage_logs WHERE user_id = ? AND booking_id IS NULL AND end_time IS NULL", userID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check active station sessions"})
+		return
+	}
+	if activeWalkInSessions > 0 {
+		c.JSON(http.StatusConflict, gin.H{"error": "End the user's active station sessions before deactivating the account"})
+		return
+	}
 	if _, err := tx.Exec("UPDATE users SET is_active = 0, token_version = token_version + 1 WHERE id = ? AND is_active = 1", userID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to deactivate user"})
 		return

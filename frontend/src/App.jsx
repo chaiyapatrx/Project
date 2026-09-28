@@ -174,18 +174,22 @@ const PublicHome = () => {
   const { user } = useAuth(); // ดึง UseAuth เข้ามาเช็ค
   const [stations, setStations] = useState([]);
   const [initialLoading, setInitialLoading] = useState(true);
+  const [stationError, setStationError] = useState("");
+  const [retryCount, setRetryCount] = useState(0);
 
   // Fetch Real Data
   useEffect(() => {
     const fetchStations = async () => {
       try {
         const response = await apiFetch("/computers");
-        if (response.ok) {
-          const data = await response.json();
-          setStations(data);
-        }
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data = await response.json();
+        if (!Array.isArray(data)) throw new Error("Unexpected station response");
+        setStations(data);
+        setStationError("");
       } catch (error) {
         console.error("Failed to fetch public stations:", error);
+        setStationError("Unable to load station status. Check the server connection and try again.");
       } finally {
         setInitialLoading(false);
       }
@@ -195,7 +199,7 @@ const PublicHome = () => {
     // Auto refresh every 10s for live status
     const interval = setInterval(fetchStations, 10000);
     return () => clearInterval(interval);
-  }, []);
+  }, [retryCount]);
 
   const availableCount = stations.filter(s => s.is_online && s.status === 'available').length;
 
@@ -255,7 +259,9 @@ const PublicHome = () => {
             </div>
             <div className="flex items-center gap-2 px-4 py-2 rounded-full bg-purple-50 border border-purple-100 shadow-sm">
               <div className="w-2.5 h-2.5 rounded-full bg-primary animate-pulse"></div>
-              <span className="text-sm font-bold text-primary">{availableCount} Available</span>
+              <span className={`text-sm font-bold ${stationError ? 'text-rose-600' : 'text-primary'}`}>
+                {stationError ? 'Status unavailable' : `${availableCount} Available`}
+              </span>
             </div>
           </div>
 
@@ -265,8 +271,26 @@ const PublicHome = () => {
               <div className="flex justify-center items-center h-64">
                 <div className="w-8 h-8 rounded-full border-4 border-slate-200 border-t-[#7c3aed] animate-spin"></div>
               </div>
+            ) : stationError && stations.length === 0 ? (
+              <div className="h-64 flex flex-col items-center justify-center gap-3 text-center" role="alert">
+                <p className="text-slate-600">{stationError}</p>
+                <button onClick={() => setRetryCount(count => count + 1)} className="px-4 py-2 rounded-lg bg-primary text-white text-sm font-bold">
+                  Try again
+                </button>
+              </div>
             ) : (
-              <div className="station-grid">
+              <>
+              {stationError && (
+                <div className="mb-4 flex items-center justify-between gap-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800" role="alert">
+                  <span>Unable to refresh station status. The displayed information may be out of date.</span>
+                  <button onClick={() => setRetryCount(count => count + 1)} className="shrink-0 font-bold underline">Try again</button>
+                </div>
+              )}
+              {stations.length === 0 ? (
+                <div className="h-64 flex items-center justify-center text-center text-slate-500">
+                  No stations are currently registered.
+                </div>
+              ) : <div className="station-grid">
                 {stations.map((station) => {
                   let isAvailable = station.is_online && station.status === 'available';
                   let isMaintenance = station.is_online && station.status === 'maintenance';
@@ -311,7 +335,8 @@ const PublicHome = () => {
                     </div>
                   );
                 })}
-              </div>
+              </div>}
+              </>
             )}
           </div>
 

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../App';
 import { apiFetch } from '../api';
+import AgentUpdates from './AgentUpdates';
 
 const Toast = ({ message, type, onClose }) => {
     useEffect(() => { const timer = setTimeout(onClose, 3000); return () => clearTimeout(timer); }, [onClose]);
@@ -69,11 +70,11 @@ function StaffStationManagement() {
                         body: JSON.stringify({ command: mappedCommand })
                     });
 
-                    if (response.ok) {
-                        setToast({ type: 'success', message: `Command ${action} sent successfully.` });
+                    const data = await response.json().catch(() => ({}));
+                    if (!response.ok || data.delivered === false) {
+                        setToast({ type: 'error', message: data.error || data.detail || data.message || `Command ${action} was not delivered.` });
                     } else {
-                        const err = await response.json();
-                        setToast({ type: 'error', message: `Failed: ${err.error || err.detail || 'Unknown error'}` });
+                        setToast({ type: 'success', message: `Command ${action} sent successfully.` });
                     }
                 } catch (error) {
                     console.error("Error sending command:", error);
@@ -108,6 +109,8 @@ function StaffStationManagement() {
                     </div>
                 </div>
             )}
+
+            <AgentUpdates />
 
             {/* Computer Stations Grid Area */}
             <div className="glass-card rounded-2xl p-6 shadow-sm text-left">
@@ -235,15 +238,6 @@ function StaffStationManagement() {
                                 >
                                     <span className="material-symbols-outlined">logout</span> Force Logout (ตัดการเชื่อมต่อ)
                                 </button>
-                                <button
-                                    onClick={() => {
-                                        handleRemoteAction(selectedStation.id, 'Restart', selectedStation.name);
-                                        setSelectedStation(null);
-                                    }}
-                                    className="w-full bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold py-3.5 rounded-2xl text-sm flex items-center justify-center gap-2 transition-all"
-                                >
-                                    <span className="material-symbols-outlined">restart_alt</span> Reset Machine (เริ่มใหม่)
-                                </button>
 
                                 {/* Toggle Maintenance for Staff */}
                                 <button
@@ -259,11 +253,14 @@ function StaffStationManagement() {
                                             if (res.ok) {
                                                 setToast({ type: 'success', message: `Station ${selectedStation.name} set to ${newStatus}` });
                                                 fetchStations();
+                                                setSelectedStation(null);
+                                            } else {
+                                                const err = await res.json().catch(() => ({}));
+                                                setToast({ type: 'error', message: err.error || err.detail || 'Failed to update station status' });
                                             }
                                         } catch {
                                             setToast({ type: 'error', message: "Network error updating station status" });
                                         }
-                                        setSelectedStation(null);
                                     }}
                                     className="w-full bg-slate-50 border border-slate-200 hover:bg-slate-100 text-slate-600 font-bold py-3 rounded-2xl text-xs flex items-center justify-center gap-2 transition-all"
                                 >

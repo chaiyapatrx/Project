@@ -19,16 +19,18 @@ type User struct {
 }
 
 type Computer struct {
-	ID         int       `db:"id" json:"id"`
-	Name       string    `db:"name" json:"name"`
-	HWID       *string   `db:"hwid" json:"hwid"`
-	IPAddress  *string   `db:"ip_address" json:"ip_address"`
-	MacAddress *string   `db:"mac_address" json:"mac_address"`
-	Status     string    `db:"status" json:"status"` // available, in_use, maintenance, disabled
-	IsActive   bool      `db:"is_active" json:"is_active"`
-	CreatedAt  time.Time `db:"created_at" json:"created_at"`
-	UpdatedAt  time.Time `db:"updated_at" json:"updated_at"`
-	AgentKeyConfigured bool `db:"agent_key_configured" json:"agent_key_configured"`
+	ID                 int       `db:"id" json:"id"`
+	Name               string    `db:"name" json:"name"`
+	HWID               *string   `db:"hwid" json:"hwid"`
+	IPAddress          *string   `db:"ip_address" json:"ip_address"`
+	MacAddress         *string   `db:"mac_address" json:"mac_address"`
+	Status             string    `db:"status" json:"status"` // available, in_use, maintenance, disabled
+	IsActive           bool      `db:"is_active" json:"is_active"`
+	AgentVersion       *string   `db:"agent_version" json:"agent_version"`
+	AgentUpdateError   *string   `db:"agent_update_error" json:"agent_update_error"`
+	CreatedAt          time.Time `db:"created_at" json:"created_at"`
+	UpdatedAt          time.Time `db:"updated_at" json:"updated_at"`
+	AgentKeyConfigured bool      `db:"agent_key_configured" json:"agent_key_configured"`
 
 	// In-memory runtime state (populated by Go Hub)
 	IsOnline        bool       `db:"-" json:"is_online"`
@@ -61,6 +63,7 @@ type UsageLog struct {
 	BookingID         *int       `db:"booking_id" json:"booking_id"`
 	StartTime         time.Time  `db:"start_time" json:"start_time"`
 	EndTime           *time.Time `db:"end_time" json:"end_time"`
+	SessionEndsAt     *time.Time `db:"session_ends_at" json:"session_ends_at,omitempty"`
 	DurationMinutes   int        `db:"duration_minutes" json:"duration_minutes"`
 	TerminationReason string     `db:"termination_reason" json:"termination_reason"`
 	CreatedAt         time.Time  `db:"created_at" json:"created_at"`

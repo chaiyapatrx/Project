@@ -1,11 +1,16 @@
 package database
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"log"
+	"net"
+	"os"
+	"strings"
 	"time"
 
-	_ "github.com/go-sql-driver/mysql"
+	"github.com/go-sql-driver/mysql"
 	"github.com/jmoiron/sqlx"
 	"golang.org/x/crypto/bcrypt"
 	"station-backend/internal/config"
@@ -14,12 +19,30 @@ import (
 var DB *sqlx.DB
 
 func InitDB(cfg *config.Config) *sqlx.DB {
-	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=utf8mb4&parseTime=True&loc=Local",
-		cfg.DBUser, cfg.DBPass, cfg.DBHost, cfg.DBPort, cfg.DBName)
+	driverConfig := mysql.NewConfig()
+	driverConfig.User = cfg.DBUser
+	driverConfig.Passwd = cfg.DBPass
+	driverConfig.Net = "tcp"
+	driverConfig.Addr = net.JoinHostPort(cfg.DBHost, cfg.DBPort)
+	driverConfig.DBName = cfg.DBName
+	driverConfig.Params = map[string]string{"charset": "utf8mb4"}
+	driverConfig.ParseTime = true
+	driverConfig.Loc = time.Local
 
-	db, err := sqlx.Connect("mysql", dsn)
+	tlsConfig, useTLS, err := dbTLSConfig(cfg.DBHost, cfg.DBTLSCAFile)
 	if err != nil {
-		log.Fatalf("[Database] Failed to connect to MySQL: %v", err)
+		log.Fatal("[Database] Failed to configure verified TLS for remote MySQL")
+	}
+	if useTLS {
+		if err := mysql.RegisterTLSConfig("verified-db", tlsConfig); err != nil {
+			log.Fatal("[Database] Failed to register verified TLS for remote MySQL")
+		}
+		driverConfig.TLSConfig = "verified-db"
+	}
+
+	db, err := sqlx.Connect("mysql", driverConfig.FormatDSN())
+	if err != nil {
+		log.Fatal("[Database] Failed to connect to MySQL")
 	}
 
 	// Production connection pool configuration
@@ -29,7 +52,7 @@ func InitDB(cfg *config.Config) *sqlx.DB {
 	db.SetConnMaxIdleTime(2 * time.Minute)
 
 	if err := db.Ping(); err != nil {
-		log.Fatalf("[Database] MySQL Ping failed: %v", err)
+		log.Fatal("[Database] MySQL Ping failed")
 	}
 
 	log.Println("[Database] Connected to MySQL successfully (Pool: Max 50 conns)")
@@ -39,6 +62,34 @@ func InitDB(cfg *config.Config) *sqlx.DB {
 	ensureSuperAdmin(db, cfg)
 
 	return db
+}
+
+func dbTLSConfig(host, caFile string) (*tls.Config, bool, error) {
+	cleanHost := strings.Trim(host, "[]")
+	ip := net.ParseIP(cleanHost)
+	if strings.EqualFold(cleanHost, "localhost") || (ip != nil && ip.IsLoopback()) {
+		return nil, false, nil
+	}
+
+	roots, err := x509.SystemCertPool()
+	if err != nil || roots == nil {
+		return nil, false, fmt.Errorf("system certificate roots unavailable")
+	}
+	if caFile != "" {
+		pem, err := os.ReadFile(caFile)
+		if err != nil {
+			return nil, false, fmt.Errorf("unable to read database CA file")
+		}
+		if !roots.AppendCertsFromPEM(pem) {
+			return nil, false, fmt.Errorf("database CA file contains no valid certificates")
+		}
+	}
+
+	return &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		RootCAs:    roots,
+		ServerName: cleanHost,
+	}, true, nil
 }
 
 func ensureSuperAdmin(db *sqlx.DB, cfg *config.Config) {
