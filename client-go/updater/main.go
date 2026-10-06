@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -18,7 +19,7 @@ func main() {
 		return
 	}
 	current, staged, version, expectedSHA := os.Args[1], os.Args[2], os.Args[3], os.Args[4]
-	if !strings.EqualFold(filepath.Base(current), "AUCCAgent.exe") || filepath.Dir(current) != filepath.Dir(staged) || len(expectedSHA) != 64 {
+	if !strings.EqualFold(filepath.Base(current), "AUCCAgent.exe") || filepath.Dir(current) != filepath.Dir(staged) || strings.EqualFold(current, staged) || len(expectedSHA) != 64 || strings.Trim(expectedSHA, "0123456789abcdef") != "" {
 		return
 	}
 	defer os.Remove(staged)
@@ -41,7 +42,9 @@ func replaceAgent(current, staged, version, expectedSHA string) error {
 	if err != nil || digest != expectedSHA {
 		return restartCurrent(current, fmt.Errorf("staged Agent SHA-256 mismatch"))
 	}
-	check := exec.Command(staged, "--version")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	check := exec.CommandContext(ctx, staged, "--version")
 	output, err := check.Output()
 	if err != nil || strings.TrimSpace(string(output)) != version {
 		return restartCurrent(current, fmt.Errorf("staged Agent version mismatch"))

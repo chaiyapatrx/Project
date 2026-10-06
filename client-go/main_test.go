@@ -2,10 +2,15 @@ package main
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -15,12 +20,152 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+func TestRunAgentBatchBuildsAndStartsCanonicalAgent(t *testing.T) {
+	dir := t.TempDir()
+	script, err := os.ReadFile("run_agent.bat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string][]byte{
+		"run_agent.bat": script,
+		"VERSION":       []byte("1.0.8\n"),
+		"stub.go":       []byte("package main\nimport (\"os\";\"strings\")\nfunc main(){if len(os.Args)>1 && os.Args[1]==\"build\" {os.WriteFile(\"build-calls.txt\",[]byte(strings.Join(os.Args[1:],\" \")),0600);return};os.WriteFile(os.Getenv(\"AUCC_TEST_STARTED_FILE\"),[]byte(\"started\"),0600)}"),
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), content, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	build := exec.Command("go", "build", "-ldflags=-H=windowsgui", "-o", filepath.Join(dir, "AUCCAgent.exe"), filepath.Join(dir, "stub.go"))
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build harmless Agent stub: %v: %s", err, output)
+	}
+	stub, err := os.ReadFile(filepath.Join(dir, "AUCCAgent.exe"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "go.exe"), stub, 0600); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(dir, "started.txt")
+	t.Setenv("AUCC_TEST_STARTED_FILE", marker)
+	run := exec.Command("cmd", "/c", filepath.Join(dir, "run_agent.bat"))
+	run.Dir = dir
+	if output, err := run.CombinedOutput(); err != nil {
+		t.Fatalf("run_agent.bat exited before starting Agent: %v: %s", err, output)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(marker); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("run_agent.bat did not start canonical AUCCAgent.exe")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	calls, err := os.ReadFile(filepath.Join(dir, "build-calls.txt"))
+	if err != nil || !strings.Contains(string(calls), "AUCCUpdater.exe") {
+		t.Fatalf("runner did not build update helper: %q, %v", calls, err)
+	}
+}
+
+func TestAgentRejectsOversizedCommands(t *testing.T) {
+	client, server := newWebSocketPair(t)
+	if err := setupAgentKeepalive(client, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = server.WriteMessage(websocket.TextMessage, make([]byte, maxAgentCommandBytes+1)) }()
+	if _, _, err := client.ReadMessage(); err != websocket.ErrReadLimit {
+		t.Fatalf("oversized command error = %v, want %v", err, websocket.ErrReadLimit)
+	}
+}
+
+func TestVerifyCommandRejectsTamperingAndStaleCommands(t *testing.T) {
+	secret := "test-agent-secret"
+	command := CommandMessage{Action: "LOCK", Timestamp: time.Now().Unix(), Data: map[string]interface{}{"auth_mode": "account"}}
+	sign := func(command *CommandMessage) {
+		canonical, err := json.Marshal(struct {
+			Action    string                 `json:"action"`
+			Timestamp int64                  `json:"timestamp"`
+			Data      map[string]interface{} `json:"data"`
+		}{command.Action, command.Timestamp, command.Data})
+		if err != nil {
+			t.Fatal(err)
+		}
+		mac := hmac.New(sha256.New, []byte(secret))
+		mac.Write(canonical)
+		command.Signature = hex.EncodeToString(mac.Sum(nil))
+	}
+	sign(&command)
+	if !verifyCommand(command, secret) {
+		t.Fatal("valid command rejected")
+	}
+	command.Action = "UNLOCK"
+	if verifyCommand(command, secret) {
+		t.Fatal("tampered command accepted")
+	}
+	command.Timestamp = time.Now().Unix() - maxCommandAgeSeconds - 5
+	sign(&command)
+	if verifyCommand(command, secret) {
+		t.Fatal("stale command accepted")
+	}
+	command.Timestamp = time.Now().Unix() + maxCommandAgeSeconds + 5
+	sign(&command)
+	if verifyCommand(command, secret) {
+		t.Fatal("future command accepted")
+	}
+	if verifyCommand(command, "") {
+		t.Fatal("empty secret accepted")
+	}
+	command.Timestamp = time.Now().Unix()
+	command.Data["command_nonce"] = "first-command-" + time.Now().String()
+	sign(&command)
+	if !acceptCommand(command, secret) || acceptCommand(command, secret) {
+		t.Fatal("command must execute once across reconnects")
+	}
+	command.Data["command_nonce"] = "second-command-" + time.Now().String()
+	if verifyCommand(command, secret) {
+		t.Fatal("unsigned nonce tampering accepted")
+	}
+	sign(&command)
+	if !acceptCommand(command, secret) {
+		t.Fatal("different nonce for identical action rejected")
+	}
+}
+
 func TestHeartbeatIntervalClampsToThirtySeconds(t *testing.T) {
 	if got := heartbeatInterval(60); got != 30*time.Second {
 		t.Fatalf("heartbeatInterval(60) = %v, want %v", got, 30*time.Second)
 	}
 	if got := heartbeatInterval(0); got != 15*time.Second {
 		t.Fatalf("heartbeatInterval(0) = %v, want %v", got, 15*time.Second)
+	}
+}
+
+func TestAgentHTTPClientTrustsOnlyConfiguredCertificate(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	caPath := filepath.Join(t.TempDir(), "server-ca.pem")
+	certificate := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
+	if err := os.WriteFile(caPath, certificate, 0600); err != nil {
+		t.Fatal(err)
+	}
+	client, err := agentHTTPClient(&Config{ServerCAFile: caPath}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := client.Get(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("status = %d", response.StatusCode)
+	}
+	if _, err := client.Get(strings.Replace(server.URL, "127.0.0.1", "localhost", 1)); err == nil {
+		t.Fatal("certificate accepted for a different host")
 	}
 }
 
@@ -116,6 +261,9 @@ func TestStationLoginURL(t *testing.T) {
 	}
 	if _, err := stationLoginURL("ftp://aucc.example/agent"); err == nil {
 		t.Fatal("stationLoginURL accepted an unsupported protocol")
+	}
+	if _, err := stationLoginURL("wss://user:password@aucc.example/api/ws/agent"); err == nil {
+		t.Fatal("stationLoginURL accepted credentials in server URL")
 	}
 }
 

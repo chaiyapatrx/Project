@@ -36,7 +36,9 @@ const styles = `
 
 function ExecDashboard() {
     const { logout, user } = useAuth();
-    const [activeTab, setActiveTabState] = useState(() => localStorage.getItem('execActiveTab') || 'overview');
+    const [activeTab, setActiveTabState] = useState(() => {
+        try { return localStorage.getItem('execActiveTab') || 'overview'; } catch { return 'overview'; }
+    });
     const [filterPeriod, setFilterPeriod] = useState('month');
     const [isDropdownOpen, setIsDropdownOpen] = useState(false);
     const dropdownRef = useRef(null);
@@ -61,7 +63,7 @@ function ExecDashboard() {
 
     const setActiveTab = (tab) => {
         setActiveTabState(tab);
-        localStorage.setItem('execActiveTab', tab);
+        try { localStorage.setItem('execActiveTab', tab); } catch { /* Storage may be unavailable. */ }
     };
 
     const renderContent = () => {
@@ -86,6 +88,7 @@ function ExecDashboard() {
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
+            URL.revokeObjectURL(url);
         } catch (err) {
             console.error("Export report error:", err);
         }

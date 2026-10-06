@@ -2,6 +2,7 @@ package hub
 
 import (
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -131,18 +132,29 @@ func (h *Hub) removeConnLock(conn *websocket.Conn) {
 
 // signCommand builds a signed payload covering the action, timestamp, and data.
 func signCommand(secret, command string, ts int64, data map[string]interface{}) map[string]interface{} {
+	if secret == "" {
+		return nil
+	}
+	nonce := make([]byte, 16)
+	if _, err := rand.Read(nonce); err != nil {
+		return nil
+	}
+	data = copyCommandData(data)
+	// Keep the nonce inside Data so existing agents verify the same envelope.
+	data["command_nonce"] = hex.EncodeToString(nonce)
 	unsigned := struct {
 		Action    string                 `json:"action"`
 		Timestamp int64                  `json:"timestamp"`
 		Data      map[string]interface{} `json:"data"`
 	}{command, ts, data}
 	canonical, err := json.Marshal(unsigned)
-	payload := map[string]interface{}{"action": command, "timestamp": ts, "data": data}
-	if err == nil && secret != "" {
-		mac := hmac.New(sha256.New, []byte(secret))
-		mac.Write(canonical)
-		payload["signature"] = hex.EncodeToString(mac.Sum(nil))
+	if err != nil {
+		return nil
 	}
+	payload := map[string]interface{}{"action": command, "timestamp": ts, "data": data}
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(canonical)
+	payload["signature"] = hex.EncodeToString(mac.Sum(nil))
 	return payload
 }
 
@@ -243,6 +255,9 @@ func (h *Hub) SendCommandToAgent(name string, command string, data map[string]in
 	}
 
 	payload := signCommand(secret, command, time.Now().Unix(), lockAuthData(command, data, hasBooking))
+	if payload == nil {
+		return false
+	}
 	msg, err := json.Marshal(payload)
 	if err != nil {
 		return false
@@ -339,6 +354,9 @@ func (h *Hub) BroadcastCommandToAllAgents(command string, data map[string]interf
 		go func(agent agentConn) {
 			defer wg.Done()
 			payload := signCommand(agent.secret, command, time.Now().Unix(), lockAuthData(command, data, agent.booking))
+			if payload == nil {
+				return
+			}
 			msg, err := json.Marshal(payload)
 			if err != nil {
 				return

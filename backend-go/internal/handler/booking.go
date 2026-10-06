@@ -307,7 +307,9 @@ func (h *BookingHandler) reconcileBookingCommit(bookingID int64, computerID int)
 		return bookingCommitUnknown, bookingErr
 	}
 	var activeBookings int
-	if err := tx.Get(&activeBookings, "SELECT COUNT(*) FROM bookings WHERE computer_id = ? AND status = 'active'", computerID); err != nil {
+	if err := tx.Get(&activeBookings, `SELECT
+		(SELECT COUNT(*) FROM bookings WHERE computer_id = ? AND status IN ('pending', 'active')) +
+		(SELECT COUNT(*) FROM usage_logs WHERE computer_id = ? AND booking_id IS NULL AND end_time IS NULL)`, computerID, computerID); err != nil {
 		return bookingCommitUnknown, err
 	}
 	recovery := classifyBookingCommitRecovery(bookingStatus, computer.Status, activeBookings)
@@ -661,6 +663,10 @@ func (h *BookingHandler) ExtendBooking(c *gin.Context) {
 	}
 
 	newEndTime := booking.EndTime.Add(time.Duration(req.AddMinutes) * time.Minute)
+	if !booking.EndTime.After(time.Now()) {
+		c.JSON(http.StatusConflict, gin.H{"error": "This booking has expired"})
+		return
+	}
 
 	if newEndTime.Sub(booking.StartTime) > time.Duration(maxDuration)*time.Minute {
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Cannot extend: session would exceed the configured maximum of %d minutes", maxDuration)})
@@ -671,18 +677,20 @@ func (h *BookingHandler) ExtendBooking(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to extend booking"})
 		return
 	}
-	if err := tx.Commit(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to commit booking extension"})
-		return
-	}
-
 	var comp models.Computer
-	if err := h.db.Get(&comp, "SELECT id, name FROM computers WHERE id = ?", booking.ComputerID); err != nil {
+	if err := tx.Get(&comp, "SELECT id, name FROM computers WHERE id = ?", booking.ComputerID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to find associated computer"})
 		return
 	}
 
 	h.hub.Mu.Lock()
+	// Preserve row-lock ordering through the Hub update. A later extension or
+	// cancellation must not be overwritten by this committed session expiry.
+	if err := tx.Commit(); err != nil {
+		h.hub.Mu.Unlock()
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to commit booking extension"})
+		return
+	}
 	if state, exists := h.hub.Computers[comp.Name]; exists {
 		if hub.MatchesBookingID(state.CurrentBookingID, booking.ID) {
 			state.SessionEndsAt = &newEndTime

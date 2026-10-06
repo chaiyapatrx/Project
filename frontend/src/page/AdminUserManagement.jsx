@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../App';
 import { apiFetch } from '../api';
+import { isNewPasswordValid, PASSWORD_POLICY_MESSAGE } from '../password';
 const Toast = ({ message, type, onClose }) => {
     useEffect(() => { const timer = setTimeout(onClose, 3000); return () => clearTimeout(timer); }, [onClose]);
     const bgClass = type === 'success' ? 'bg-emerald-50 border-emerald-200 text-emerald-800' : 'bg-rose-50 border-rose-200 text-rose-800';
@@ -59,6 +60,10 @@ function AdminUserManagement() {
 
     const handleCreateUser = async (e) => {
         e.preventDefault();
+        if (!isNewPasswordValid(newUserData.password)) {
+            setToast({ type: 'error', message: PASSWORD_POLICY_MESSAGE });
+            return;
+        }
         try {
             const response = await apiFetch("/admin/users", {
                 method: "POST",
@@ -114,8 +119,8 @@ function AdminUserManagement() {
 
     const handleResetPassword = async (e) => {
         e.preventDefault();
-        if (!resetPwdModal.newPassword || resetPwdModal.newPassword.length < 8) {
-            setToast({ type: 'error', message: "Password must be at least 8 characters" });
+        if (!isNewPasswordValid(resetPwdModal.newPassword)) {
+            setToast({ type: 'error', message: PASSWORD_POLICY_MESSAGE });
             return;
         }
         try {
@@ -207,15 +212,17 @@ function AdminUserManagement() {
                                 />
                             </div>
                             <div>
-                                <label className="block text-xs font-bold text-slate-600 uppercase mb-1">Password</label>
+                                <label htmlFor="new-user-password" className="block text-xs font-bold text-slate-600 uppercase mb-1">Password</label>
                                 <input
+                                    id="new-user-password" aria-describedby="new-user-password-help" autoComplete="new-password"
                                     type="password" required
                                     value={newUserData.password}
                                     onChange={(e) => setNewUserData({...newUserData, password: e.target.value})}
                                     className="w-full bg-slate-50 border rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-purple-200"
-                                    placeholder="At least 8 characters"
-                                    minLength={8}
+                                    placeholder="At least 15 characters"
+                                    minLength={15} maxLength={72}
                                 />
+                                <p id="new-user-password-help" className="mt-1 text-xs text-slate-500">{PASSWORD_POLICY_MESSAGE}</p>
                             </div>
                             <div>
                                 <label className="block text-xs font-bold text-slate-600 uppercase mb-1">Full Name</label>
@@ -276,16 +283,18 @@ function AdminUserManagement() {
                                 Setting new password for user: <span className="font-bold text-slate-800">@{resetPwdModal.username}</span>
                             </p>
                             <div>
-                                <label className="block text-xs font-bold text-slate-600 uppercase mb-1">New Password</label>
+                                <label htmlFor="reset-user-password" className="block text-xs font-bold text-slate-600 uppercase mb-1">New Password</label>
                                 <input
+                                    id="reset-user-password" aria-describedby="reset-user-password-help" autoComplete="new-password"
                                     type="password" required
                                     value={resetPwdModal.newPassword}
                                     onChange={(e) => setResetPwdModal({...resetPwdModal, newPassword: e.target.value})}
                                     className="w-full bg-slate-50 border rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-purple-200"
-                                    placeholder="At least 8 characters"
-                                    minLength={8}
+                                    placeholder="At least 15 characters"
+                                    minLength={15} maxLength={72}
                                     autoFocus
                                 />
+                                <p id="reset-user-password-help" className="mt-1 text-xs text-slate-500">{PASSWORD_POLICY_MESSAGE}</p>
                             </div>
                             <div className="flex justify-end gap-2 pt-3 border-t">
                                 <button type="button" onClick={() => setResetPwdModal({ open: false, userId: null, username: '', newPassword: '' })} className="px-4 py-2 rounded-lg text-sm font-bold text-slate-500 hover:bg-slate-100">Cancel</button>
@@ -309,14 +318,6 @@ function AdminUserManagement() {
                                 className="pl-10 pr-4 py-2 bg-white border border-slate-200 rounded-lg text-sm w-full focus:ring-2 focus:ring-purple-200 focus:border-purple-300 transition-all outline-none"
                                 placeholder="Search users by name, username, or ID..."
                             />
-                        </div>
-                        <div className="flex items-center gap-2">
-                            <button className="p-2 text-slate-500 hover:bg-slate-100 rounded-lg transition-colors" title="Filter">
-                                <span className="material-symbols-outlined">filter_list</span>
-                            </button>
-                            <button className="p-2 text-slate-500 hover:bg-slate-100 rounded-lg transition-colors" title="Export">
-                                <span className="material-symbols-outlined">download</span>
-                            </button>
                         </div>
                     </div>
 

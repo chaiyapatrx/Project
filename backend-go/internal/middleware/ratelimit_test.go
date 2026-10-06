@@ -1,9 +1,52 @@
 package middleware
 
 import (
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/gin-gonic/gin"
 )
+
+func TestAccountLoginLimitSharedAcrossIPsAndLoginRoutes(t *testing.T) {
+	previous := accountLoginLimiter
+	accountLoginLimiter = NewIPRateLimiter(10, time.Minute)
+	defer func() { accountLoginLimiter = previous }()
+	router := gin.New()
+	for _, route := range []string{"/browser", "/station"} {
+		router.POST(route, func(c *gin.Context) {
+			if AccountLoginAllowed(c, 42) {
+				c.Status(http.StatusNoContent)
+			}
+		})
+	}
+	for attempt := 0; attempt < 11; attempt++ {
+		route := "/browser"
+		if attempt%2 == 1 {
+			route = "/station"
+		}
+		request := httptest.NewRequest(http.MethodPost, route, nil)
+		request.RemoteAddr = fmt.Sprintf("192.0.2.%d:1234", attempt+1)
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		want := http.StatusNoContent
+		if attempt == 10 {
+			want = http.StatusTooManyRequests
+			if response.Header().Get("Retry-After") == "" {
+				t.Fatal("account limit lacks Retry-After")
+			}
+		}
+		if response.Code != want {
+			t.Fatalf("attempt %d status = %d, want %d", attempt+1, response.Code, want)
+		}
+	}
+	context, _ := gin.CreateTestContext(httptest.NewRecorder())
+	if !AccountLoginAllowed(context, 43) {
+		t.Fatal("one account's attempts blocked a different account")
+	}
+}
 
 func TestIPRateLimiterWindowAndIsolation(t *testing.T) {
 	limiter := NewIPRateLimiter(2, time.Minute)

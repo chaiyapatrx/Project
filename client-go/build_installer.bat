@@ -7,7 +7,7 @@ set "GOARCH=amd64"
 set "CGO_ENABLED=0"
 set /p APP_VERSION=<VERSION
 if not exist "dist" mkdir "dist"
-go build -trimpath -ldflags="-s -w -X main.agentVersion=%APP_VERSION%" -o "dist\AUCCAgent.exe" .
+go build -trimpath -ldflags="-s -w -H=windowsgui -X main.agentVersion=%APP_VERSION%" -o "dist\AUCCAgent.exe" .
 if errorlevel 1 exit /b 1
 go build -trimpath -ldflags="-s -w -H=windowsgui" -o "dist\AUCCUpdater.exe" ./updater
 if errorlevel 1 exit /b 1

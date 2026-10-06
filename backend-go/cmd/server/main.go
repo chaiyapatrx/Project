@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -123,7 +124,7 @@ func main() {
 	// 6. Router Setup
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
-	r.Use(gin.Logger(), gin.Recovery(), middleware.SecurityHeaders(), func(c *gin.Context) {
+	r.Use(middleware.SafeAccessLogger(), middleware.SafeRecovery(), middleware.SecurityHeaders(), func(c *gin.Context) {
 		limit := int64(1 << 20)
 		if c.Request.Method == http.MethodPost && c.Request.URL.Path == "/api/admin/agent-releases" {
 			limit = 17 << 20 // 16 MB Agent EXE plus multipart headers
@@ -207,6 +208,8 @@ func main() {
 		api.POST("/api/admin/agent-releases/:id/activate", middleware.RequireRoles("admin", "staff"), updatesH.Activate)
 		api.DELETE("/api/admin/agent-releases/active", middleware.RequireRoles("admin", "staff"), updatesH.Pause)
 		api.POST("/api/admin/computers/:id/approve", middleware.RequireRoles("admin"), compH.ApproveAgent)
+		api.DELETE("/api/admin/computers/pending/:id", middleware.RequireRoles("admin"), compH.RejectPendingAgent)
+		api.POST("/api/admin/computers/:id/reject", middleware.RequireRoles("admin"), compH.RejectPendingAgent)
 		api.POST("/computers", middleware.RequireRoles("admin"), compH.CreateComputer)
 		api.POST("/api/admin/computers/:id/agent-secret", middleware.RequireRoles("admin"), compH.RotateAgentSecret)
 		api.PUT("/computers/:id", middleware.RequireRoles("admin", "staff"), compH.UpdateComputer)
@@ -229,11 +232,24 @@ func main() {
 		api.GET("/api/admin/analytics/summary", middleware.RequireRoles("admin", "staff", "executive"), settH.GetAnalyticsSummary)
 	}
 
+	if cfg.FrontendDistDir != "" {
+		index := filepath.Join(cfg.FrontendDistDir, "index.html")
+		if _, err := os.Stat(index); err != nil {
+			log.Fatalf("[Frontend] Cannot read %s: %v", index, err)
+		}
+		r.Static("/assets", filepath.Join(cfg.FrontendDistDir, "assets"))
+		r.GET("/", func(c *gin.Context) {
+			c.Header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' wss:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
+			c.File(index)
+		})
+	}
+
 	// 7. Graceful Server Startup & Shutdown
 	srv := &http.Server{
 		Addr:              cfg.ListenAddr,
 		Handler:           r,
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
 		IdleTimeout:       90 * time.Second,
 		MaxHeaderBytes:    1 << 20,
 		TLSConfig:         &tls.Config{MinVersion: tls.VersionTLS12},

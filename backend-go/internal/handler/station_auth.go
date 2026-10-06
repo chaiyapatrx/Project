@@ -7,9 +7,11 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"station-backend/internal/auth"
+	"station-backend/internal/middleware"
 )
 
 type stationLoginRequest struct {
@@ -40,7 +42,7 @@ func (h *WSHandler) StationLogin(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Station authentication failed"})
 		return
 	}
-	if req.Mode == "account" && (strings.TrimSpace(req.Username) == "" || len(req.Username) > 50 || len(req.Password) == 0 || len(req.Password) > 72) {
+	if req.Mode == "account" && (strings.TrimSpace(req.Username) == "" || utf8.RuneCountInString(req.Username) > 50 || len(req.Password) == 0 || len(req.Password) > 72) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Username and password are required"})
 		return
 	}
@@ -72,15 +74,7 @@ func (h *WSHandler) StationLogin(c *gin.Context) {
 		return
 	}
 	if allowed, retryAfter := h.stationLoginLimiter.Allow(computer.Name); !allowed {
-		retrySeconds := int(retryAfter.Seconds())
-		if retryAfter%time.Second != 0 {
-			retrySeconds++
-		}
-		if retrySeconds < 1 {
-			retrySeconds = 1
-		}
-		c.Header("Retry-After", strconv.Itoa(retrySeconds))
-		c.JSON(http.StatusTooManyRequests, gin.H{"error": "Too many station login attempts; try again later"})
+		middleware.RejectRateLimited(c, retryAfter)
 		return
 	}
 	if computer.Status == "maintenance" || computer.Status == "disabled" {
@@ -136,10 +130,14 @@ func (h *WSHandler) StationLogin(c *gin.Context) {
 			PasswordHash string `db:"password_hash"`
 		}
 		if err := tx.Get(&user, "SELECT id, username, password_hash FROM users WHERE username = ? AND is_active = 1 FOR UPDATE", strings.TrimSpace(req.Username)); err == sql.ErrNoRows {
+			_ = auth.CheckPasswordHash(req.Password, auth.DummyPasswordHash)
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid username or password"})
 			return
 		} else if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to verify station login"})
+			return
+		}
+		if !middleware.AccountLoginAllowed(c, user.ID) {
 			return
 		}
 		if !auth.CheckPasswordHash(req.Password, user.PasswordHash) {

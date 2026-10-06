@@ -1,6 +1,6 @@
 #define AppName "AUCC Agent"
 #ifndef AppVersion
-#define AppVersion "1.0.0"
+#define AppVersion "1.0.9"
 #endif
 #ifndef AgentServerURL
 #define AgentServerURL ""
@@ -25,16 +25,18 @@ CloseApplications=yes
 RestartApplications=no
 UninstallDisplayIcon={app}\AUCCAgent.exe
 
-[Tasks]
-Name: "autostart"; Description: "Start AUCC Agent when I sign in to Windows"
-
 [Files]
 Source: "dist\AUCCAgent.exe"; DestDir: "{app}"; Flags: ignoreversion; AfterInstall: WriteStationConfig
 Source: "dist\AUCCUpdater.exe"; DestDir: "{app}"; Flags: ignoreversion
+#ifexist "dist\server-ca.pem"
+Source: "dist\server-ca.pem"; DestDir: "{app}"; Flags: ignoreversion
+#endif
 
 [Icons]
 Name: "{group}\AUCC Agent"; Filename: "{app}\AUCCAgent.exe"; WorkingDir: "{app}"
-Name: "{userstartup}\AUCC Agent"; Filename: "{app}\AUCCAgent.exe"; WorkingDir: "{app}"; Tasks: autostart; Flags: runminimized
+
+[Registry]
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "AUCC Agent"; ValueData: """{app}\AUCCAgent.exe"""; Flags: uninsdeletevalue
 
 [Run]
 Filename: "{app}\AUCCAgent.exe"; Parameters: "--enroll"; WorkingDir: "{app}"; Flags: runhidden
@@ -125,6 +127,7 @@ end;
 procedure WriteStationConfig;
 var
   ConfigDir: String;
+  CAFile: String;
   Lines: TArrayOfString;
 begin
   if FileExists(ConfigFilePath) then Exit;
@@ -133,12 +136,18 @@ begin
   if not ForceDirectories(ConfigDir) then
     RaiseException('Could not create the private station settings folder');
 
-  SetArrayLength(Lines, 5);
+#ifexist "dist\server-ca.pem"
+  CAFile := ExpandConstant('{app}\server-ca.pem');
+#else
+  CAFile := '';
+#endif
+  SetArrayLength(Lines, 6);
   Lines[0] := '{';
   Lines[1] := '  "server_url": "' + JsonEscape(Trim(SettingsPage.Values[0])) + '",';
-  Lines[2] := '  "ping_interval_seconds": 15,';
-  Lines[3] := '  "auto_enroll": true';
-  Lines[4] := '}';
+  Lines[2] := '  "server_ca_file": "' + JsonEscape(CAFile) + '",';
+  Lines[3] := '  "ping_interval_seconds": 15,';
+  Lines[4] := '  "auto_enroll": true';
+  Lines[5] := '}';
   if not SaveStringsToUTF8FileWithoutBOM(ConfigFilePath, Lines, False) then
     RaiseException('Could not save the private station settings');
 end;

@@ -2,12 +2,32 @@ package middleware
 
 import (
 	"context"
+	"io"
+	"log"
 	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
 )
+
+// Log route templates, never user-controlled query/path values or request data.
+func SafeAccessLogger() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		started := time.Now()
+		c.Next()
+		log.Printf("[HTTP] route=%q status=%d duration=%s", c.FullPath(), c.Writer.Status(), time.Since(started))
+	}
+}
+
+// Gin's default recovery dumps Cookie and X-Agent-Secret headers. Keep panic
+// diagnostics to the route and type, never request headers or panic contents.
+func SafeRecovery() gin.HandlerFunc {
+	return gin.CustomRecoveryWithWriter(io.Discard, func(c *gin.Context, recovered interface{}) {
+		log.Printf("[Recovery] Panic handling %s %s (%T)", c.Request.Method, c.FullPath(), recovered)
+		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
+	})
+}
 
 func SecurityHeaders() gin.HandlerFunc {
 	return func(c *gin.Context) {

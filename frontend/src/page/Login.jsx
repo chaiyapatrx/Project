@@ -3,6 +3,7 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../App';
 import { apiFetch } from '../api';
+import { passwordByteLength } from '../password';
 
 const styles = `
   .glass-panel {
@@ -40,25 +41,15 @@ function Login() {
     const [isLoading, setIsLoading] = useState(false);
     const [errorMsg, setErrorMsg] = useState("");
 
-    // --- State สำหรับ UI (Switch Mode) ---
-    const isInternal = true;
-
     // --- ฟังก์ชัน Login หลัก ---
     const handleLogin = async (e) => {
         e.preventDefault();
         setErrorMsg("");
-        setIsLoading(true);
-
-        if (window.electronAPI) {
-            try {
-                const config = await window.electronAPI.getConfig();
-                if (config && config.server_ip) {
-                    window.electronConfig = config;
-                }
-            } catch (err) {
-                console.error("Failed to get config from Electron:", err);
-            }
+        if (passwordByteLength(password) > 72) {
+            setErrorMsg('Password must not exceed 72 UTF-8 bytes.');
+            return;
         }
+        setIsLoading(true);
 
         try {
             const formData = new FormData();
@@ -105,9 +96,8 @@ function Login() {
     return (
         <>
             <style>{styles}</style>
-            {/* Conditional Layout: Fullscreen for Kiosk (Electron), Card for Web */}
-            <div className={`min-h-screen w-full flex items-center justify-center font-['Inter'] ${window.electronAPI ? 'bg-white' : 'bg-gradient-to-br from-white via-purple-50/30 to-slate-50 p-6'}`}>
-                <div className={`w-full flex flex-col md:flex-row overflow-hidden ${window.electronAPI ? 'h-screen max-w-none' : 'layout-container max-w-[1100px] rounded-xl glass-panel shadow-[0_32px_64px_-16px_rgba(124,58,237,0.12)] min-h-[600px]'}`}>
+            <div className="min-h-screen w-full flex items-center justify-center font-['Inter'] bg-gradient-to-br from-white via-purple-50/30 to-slate-50 p-6">
+                <div className="w-full flex flex-col md:flex-row overflow-hidden layout-container max-w-[1100px] rounded-xl glass-panel shadow-[0_32px_64px_-16px_rgba(124,58,237,0.12)] min-h-[600px]">
 
                     {/* ฝั่งซ้าย: Banner & Announcements */}
                     <div className="w-full md:w-1/2 relative bg-slate-100 flex flex-col">
@@ -139,9 +129,6 @@ function Login() {
                     <div className="w-full md:w-1/2 p-8 md:p-16 flex flex-col justify-center bg-white/40 text-left relative">
 
                         {/* ปุ่มย้อนกลับ */}
-                        {/* ปุ่มย้อนกลับ */}
-                        {/* ปุ่มย้อนกลับ (ซ่อนถ้าเป็น Kiosk) */}
-                        {!window.electronAPI && (
                             <button
                                 onClick={() => navigate('/')}
                                 className="absolute top-6 right-6 flex items-center gap-2 px-4 py-2.5 rounded-full bg-white/40 hover:bg-white/80 backdrop-blur-md border border-slate-200/60 shadow-sm hover:shadow-md text-slate-500 hover:text-purple-600 transition-all group z-20"
@@ -150,14 +137,12 @@ function Login() {
                                 <span className="material-symbols-outlined text-lg group-hover:-translate-x-0.5 transition-transform">arrow_back</span>
                                 <span className="text-xs font-bold uppercase tracking-wider">Back</span>
                             </button>
-                        )}
-
-                        <div className="mb-12 animate-fade-in" key={isInternal ? 'internal-head' : 'external-head'}>
+                        <div className="mb-12 animate-fade-in">
                             <h1 className="text-slate-900 text-4xl font-black tracking-tight leading-tight">
-                                {isInternal ? 'System Access' : 'External Portal'}
+                                System Access
                             </h1>
                             <p className="text-slate-500 text-base mt-3 font-normal text-left">
-                                {isInternal ? 'Enter your secure credentials to proceed.' : 'Access for authorized external partners only.'}
+                                Enter your secure credentials to proceed.
                             </p>
                         </div>
 
@@ -169,21 +154,21 @@ function Login() {
                             </div>
                         )}
 
-                        <form className="flex flex-col gap-8" onSubmit={handleLogin} key={isInternal ? 'internal-form' : 'external-form'}>
+                        <form className="flex flex-col gap-8" onSubmit={handleLogin}>
 
-                            {/* Input 1: Username / Key */}
+                            {/* Username */}
                             <div className="flex flex-col gap-2 animate-fade-in">
                                 <label className="flex flex-col w-full text-left">
                                     <p className="text-slate-500 text-[11px] font-bold uppercase tracking-[0.2em] pb-2.5">
-                                        {isInternal ? 'Identity' : 'Partner Key'}
+                                        Identity
                                     </p>
                                     <div className="relative group">
                                         <span className="material-symbols-outlined absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-[#7c3aed] transition-colors">
-                                            {isInternal ? 'person' : 'vpn_key'}
+                                            person
                                         </span>
                                         <input
                                             className="glass-input flex w-full min-w-0 rounded-lg text-slate-900 h-14 placeholder:text-slate-300 pl-12 pr-4 text-base font-normal transition-all focus:ring-4 focus:ring-[#7c3aed]/10"
-                                            placeholder={isInternal ? "Username" : "Enter your partner access key"}
+                                            placeholder="Username"
                                             type="text"
                                             required
                                             value={username}
@@ -193,8 +178,7 @@ function Login() {
                                 </label>
                             </div>
 
-                            {/* Input 2: Password (เฉพาะ Internal) */}
-                            {isInternal && (
+                            {/* Password */}
                                 <div className="flex flex-col gap-2 animate-fade-in">
                                     <label className="flex flex-col w-full text-left">
                                         <p className="text-slate-500 text-[11px] font-bold uppercase tracking-[0.2em] pb-2.5">Password</p>
@@ -211,7 +195,6 @@ function Login() {
                                         </div>
                                     </label>
                                 </div>
-                            )}
 
                             {/* Buttons */}
                             <div className="flex flex-col sm:flex-row items-center gap-4 mt-4">
@@ -229,12 +212,6 @@ function Login() {
                             </div>
                         </form>
 
-                        <div className="mt-16 pt-8 border-t border-slate-100 flex items-center justify-end gap-3">
-                            <div className={`px-2 py-1 rounded text-[10px] font-bold uppercase tracking-widest ${window.electronAPI ? 'bg-purple-100 text-purple-700' : 'bg-red-100 text-red-600'}`}>
-                                {window.electronAPI ? 'ELECTRON MODE' : 'WEB MODE (NOT KIOSK)'}
-                            </div>
-                            <p className="text-slate-300 text-[10px] font-bold tracking-widest uppercase">v4.2.0-secure</p>
-                        </div>
                     </div>
 
                 </div>

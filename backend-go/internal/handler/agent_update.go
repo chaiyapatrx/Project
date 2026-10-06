@@ -161,7 +161,7 @@ func (h *AgentUpdateHandler) activeRelease() (agentRelease, error) {
 	var release agentRelease
 	err := h.db.Get(&release, `SELECT r.id, r.version, r.sha256, r.file_size, r.created_at
 		FROM agent_releases r JOIN system_settings s ON s.setting_key = 'agent_release_id'
-		AND s.setting_value = CAST(r.id AS CHAR) LIMIT 1`)
+		AND CAST(s.setting_value AS UNSIGNED) = r.id LIMIT 1`)
 	return release, err
 }
 

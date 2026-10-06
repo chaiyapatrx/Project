@@ -57,6 +57,7 @@ func AuthMiddleware(cfg *config.Config, db *sqlx.DB) gin.HandlerFunc {
 		c.Set("user_id", claims.UserID)
 		c.Set("username", claims.Username)
 		c.Set("role", current.Role)
+		c.Set("token_version", claims.TokenVersion)
 		c.Next()
 	}
 }

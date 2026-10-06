@@ -1,16 +1,91 @@
 package handler
 
 import (
+	"context"
 	"database/sql"
+	"database/sql/driver"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
+	"github.com/jmoiron/sqlx"
+	"station-backend/internal/auth"
+	"station-backend/internal/config"
 	"station-backend/internal/hub"
 )
+
+// A small SQL driver supplies the authenticated account without a live MySQL
+// server. The test still exercises the actual WebSocket handler and network.
+type monitorAuthDriver struct{}
+type monitorAuthConn struct{}
+type monitorAuthRows struct{ read bool }
+
+func init() { sql.Register("monitor-expiry-test", monitorAuthDriver{}) }
+
+func (monitorAuthDriver) Open(string) (driver.Conn, error) { return monitorAuthConn{}, nil }
+func (monitorAuthConn) Close() error                       { return nil }
+func (monitorAuthConn) Begin() (driver.Tx, error)          { return nil, fmt.Errorf("unexpected transaction") }
+func (monitorAuthConn) Prepare(string) (driver.Stmt, error) {
+	return nil, fmt.Errorf("unexpected prepared statement")
+}
+func (monitorAuthConn) QueryContext(_ context.Context, query string, _ []driver.NamedValue) (driver.Rows, error) {
+	if !strings.Contains(query, "SELECT role, is_active, token_version FROM users") {
+		return nil, fmt.Errorf("unexpected query: %s", query)
+	}
+	return &monitorAuthRows{}, nil
+}
+func (*monitorAuthRows) Columns() []string { return []string{"role", "is_active", "token_version"} }
+func (*monitorAuthRows) Close() error      { return nil }
+func (r *monitorAuthRows) Next(values []driver.Value) error {
+	if r.read {
+		return io.EOF
+	}
+	r.read = true
+	values[0], values[1], values[2] = "admin", true, int64(0)
+	return nil
+}
+
+func TestMonitorDisconnectsWhenTokenExpires(t *testing.T) {
+	db, err := sql.Open("monitor-expiry-test", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	cfg := &config.Config{JWTSecret: "01234567890123456789012345678901"}
+	expiry := time.Now().Add(2 * time.Second)
+	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, &auth.CustomClaims{
+		UserID: 1, Role: "admin", RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(expiry)},
+	}).SignedString([]byte(cfg.JWTSecret))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := NewWSHandler(hub.InitHub(), cfg, sqlx.NewDb(db, "monitor-expiry-test"))
+	router := gin.New()
+	router.GET("/monitor", h.MonitorWS)
+	server := httptest.NewServer(router)
+	defer server.Close()
+	conn, _, err := websocket.DefaultDialer.Dial(strings.Replace(server.URL, "http://", "ws://", 1)+"/monitor", http.Header{"Cookie": {"auth_token=" + token}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, _, err := conn.ReadMessage(); err != nil {
+		t.Fatalf("initial monitor snapshot failed: %v", err)
+	}
+	_ = conn.SetReadDeadline(expiry.Add(time.Second))
+	if _, _, err := conn.ReadMessage(); err == nil {
+		t.Fatal("expired monitor session remained connected")
+	} else if timeout, ok := err.(interface{ Timeout() bool }); ok && timeout.Timeout() {
+		t.Fatal("monitor did not close when its token expired")
+	}
+}
 
 func TestDecideAgentSync(t *testing.T) {
 	tests := []struct {

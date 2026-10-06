@@ -6,6 +6,8 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -30,6 +32,7 @@ import (
 
 type Config struct {
 	ServerURL           string `json:"server_url"`
+	ServerCAFile        string `json:"server_ca_file"`
 	MachineName         string `json:"machine_name"`
 	PingIntervalSeconds int    `json:"ping_interval_seconds"`
 	AgentSecret         string `json:"agent_secret"`
@@ -37,7 +40,12 @@ type Config struct {
 	enrollmentApproved  bool
 }
 
-var agentVersion = "1.0.0"
+var agentVersion = "1.0.9"
+
+var (
+	agentCommandReplayMu   sync.Mutex
+	agentCommandSignatures = make(map[string]int64)
+)
 
 type CommandMessage struct {
 	Action    string                 `json:"action"`
@@ -54,6 +62,8 @@ const maxPingIntervalSeconds = 30
 const (
 	agentReadTimeout      = 60 * time.Second
 	agentPongWriteTimeout = 2 * time.Second
+	agentWriteTimeout     = 5 * time.Second
+	maxAgentCommandBytes  = 64 << 10
 )
 
 var (
@@ -76,14 +86,22 @@ var (
 	procSetFocus             = modUser32.NewProc("SetFocus")
 	procSendMessageW         = modUser32.NewProc("SendMessageW")
 	procGetMessageW          = modUser32.NewProc("GetMessageW")
+	procIsDialogMessageW     = modUser32.NewProc("IsDialogMessageW")
 	procTranslateMessage     = modUser32.NewProc("TranslateMessage")
 	procDispatchMessageW     = modUser32.NewProc("DispatchMessageW")
 	procDefWindowProcW       = modUser32.NewProc("DefWindowProcW")
 	procGetStockObject       = syscall.NewLazyDLL("gdi32.dll").NewProc("GetStockObject")
 	procFillRect             = syscall.NewLazyDLL("user32.dll").NewProc("FillRect")
 	procSetTextColor         = syscall.NewLazyDLL("gdi32.dll").NewProc("SetTextColor")
+	procSetBkColor           = syscall.NewLazyDLL("gdi32.dll").NewProc("SetBkColor")
 	procSetBkMode            = syscall.NewLazyDLL("gdi32.dll").NewProc("SetBkMode")
 	procSelectObject         = syscall.NewLazyDLL("gdi32.dll").NewProc("SelectObject")
+	procCreateSolidBrush     = syscall.NewLazyDLL("gdi32.dll").NewProc("CreateSolidBrush")
+	procDeleteObject         = syscall.NewLazyDLL("gdi32.dll").NewProc("DeleteObject")
+	procRoundRect            = syscall.NewLazyDLL("gdi32.dll").NewProc("RoundRect")
+	procEllipse              = syscall.NewLazyDLL("gdi32.dll").NewProc("Ellipse")
+	procCreateRoundRectRgn   = syscall.NewLazyDLL("gdi32.dll").NewProc("CreateRoundRectRgn")
+	procSetWindowRgn         = modUser32.NewProc("SetWindowRgn")
 	procDrawTextW            = syscall.NewLazyDLL("user32.dll").NewProc("DrawTextW")
 	procCreateFontW          = syscall.NewLazyDLL("gdi32.dll").NewProc("CreateFontW")
 	procGetModuleHandleW     = syscall.NewLazyDLL("kernel32.dll").NewProc("GetModuleHandleW")
@@ -91,10 +109,16 @@ var (
 	stationLockOverlayProc   uintptr
 	stationLockOverlayFont   uintptr
 	stationAuthFont          uintptr
+	stationLabelFont         uintptr
+	stationButtonFont        uintptr
+	stationInputBrush        uintptr
+	stationCardBrush         uintptr
+	stationPageBrush         uintptr
 	stationAgentConfig       *Config
 	stationHWID              string
 	stationAuthMode          string
 	stationTitleControl      uintptr
+	stationSubtitleControl   uintptr
 	stationStatusControl     uintptr
 	stationUsernameControl   uintptr
 	stationPasswordControl   uintptr
@@ -103,6 +127,10 @@ var (
 	stationPasswordLabel     uintptr
 	stationCodeLabel         uintptr
 	stationSubmitControl     uintptr
+	stationUsernameRect      stationLockRect
+	stationPasswordRect      stationLockRect
+	stationAccessCodeRect    stationLockRect
+	stationSubmitRect        stationLockRect
 	stationLoginPending      bool
 	stationLoginResultMu     sync.Mutex
 	stationLoginResult       string
@@ -115,23 +143,28 @@ const (
 	wmCreate         = 0x0001
 	wmCommand        = 0x0111
 	wmCtlColorStatic = 0x0138
+	wmCtlColorEdit   = 0x0133
+	wmDrawItem       = 0x002B
+	wmKeyDown        = 0x0100
 	wmClose          = 0x0010
 	wmPaint          = 0x000F
 	wmEraseBkgnd     = 0x0014
 	wmSysCommand     = 0x0112
 	scClose          = 0xF060
 
-	wsPopup        = 0x80000000
-	wsChild        = 0x40000000
-	wsVisible      = 0x10000000
-	wsTabStop      = 0x00010000
-	wsBorder       = 0x00800000
-	esAutoHScroll  = 0x00000080
-	esPassword     = 0x00000020
-	bsDefault      = 0x00000001
-	ssCenter       = 0x00000001
-	wsExTopmost    = 0x00000008
-	wsExToolWindow = 0x00000080
+	wsPopup           = 0x80000000
+	wsChild           = 0x40000000
+	wsVisible         = 0x10000000
+	wsTabStop         = 0x00010000
+	wsBorder          = 0x00800000
+	esAutoHScroll     = 0x00000080
+	esPassword        = 0x00000020
+	bsDefault         = 0x00000001
+	bsOwnerDraw       = 0x0000000B
+	ssCenter          = 0x00000001
+	wsExTopmost       = 0x00000008
+	wsExToolWindow    = 0x00000080
+	wsExControlParent = 0x00010000
 
 	swHide = 0
 	swShow = 5
@@ -142,13 +175,19 @@ const (
 	wmSetFont            = 0x0030
 	bnClicked            = 0
 	stationLoginButtonID = 1001
+	vkReturn             = 0x0D
+	emSetCueBanner       = 0x1501
+	emSetMargins         = 0x00D3
+	ecLeftMargin         = 0x0001
+	ecRightMargin        = 0x0002
 	authModeConnecting   = 0
 	authModeAccount      = 1
 	authModeAccessCode   = 2
 
-	dtCenter   = 0x00000001
-	dtVCenter  = 0x00000004
-	dtWordWrap = 0x00000010
+	dtCenter     = 0x00000001
+	dtVCenter    = 0x00000004
+	dtWordWrap   = 0x00000010
+	dtSingleLine = 0x00000020
 )
 
 type stationLockWndClass struct {
@@ -177,6 +216,13 @@ type stationLockPaint struct {
 	Restore   int32
 	IncUpdate int32
 	Reserved  [32]byte
+}
+
+type stationDrawItem struct {
+	CtlType, CtlID, ItemID, ItemAction, ItemState uint32
+	Window, DC                                    uintptr
+	Rect                                          stationLockRect
+	ItemData                                      uintptr
 }
 
 type stationLockPoint struct {
@@ -212,6 +258,9 @@ func main() {
 		}
 		return
 	}
+	if err := ensureAgentAutoStart(); err != nil {
+		log.Printf("[Agent] Could not repair Windows auto-start: %v", err)
+	}
 
 	if err := startStationLockOverlay(); err != nil {
 		log.Fatalf("[Agent] Could not start station lock overlay: %v", err)
@@ -232,7 +281,6 @@ func main() {
 
 	log.Printf("[Agent] Machine Name : %s", cfg.MachineName)
 	log.Printf("[Agent] Hardware ID  : %s", hwid)
-	log.Printf("[Agent] Target Server: %s", cfg.ServerURL)
 	log.Println("[Agent] Starting WebSocket agent engine...")
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -257,8 +305,8 @@ func main() {
 			return
 		}
 		backoff *= 2
-		if backoff > 30*time.Second {
-			backoff = 30 * time.Second
+		if backoff > 5*time.Second {
+			backoff = 5 * time.Second
 		}
 	}
 }
@@ -279,7 +327,7 @@ func runAgentSession(ctx context.Context, cfg *Config, hwid string) (bool, error
 	if err != nil {
 		return false, fmt.Errorf("invalid server URL: %w", err)
 	}
-	if (u.Scheme != "ws" && u.Scheme != "wss") || u.Host == "" {
+	if (u.Scheme != "ws" && u.Scheme != "wss") || u.Host == "" || u.User != nil {
 		return false, fmt.Errorf("server_url must be a ws:// or wss:// URL")
 	}
 	if u.Scheme == "ws" && !isLoopbackHost(u.Hostname()) {
@@ -301,7 +349,14 @@ func runAgentSession(ctx context.Context, cfg *Config, hwid string) (bool, error
 	requestHeader.Set("X-Agent-Secret", cfg.AgentSecret)
 
 	log.Printf("[WS] Connecting to %s...", u.String())
-	c, _, err := websocket.DefaultDialer.DialContext(ctx, u.String(), requestHeader)
+	tlsConfig, err := agentTLSConfig(cfg)
+	if err != nil {
+		return false, err
+	}
+	dialer := *websocket.DefaultDialer
+	dialer.TLSClientConfig = tlsConfig
+	dialer.HandshakeTimeout = 5 * time.Second
+	c, _, err := dialer.DialContext(ctx, u.String(), requestHeader)
 	if err != nil {
 		return false, err
 	}
@@ -334,7 +389,7 @@ func runAgentSession(ctx context.Context, cfg *Config, hwid string) (bool, error
 				continue
 			}
 
-			if !verifyCommand(cmd, cfg.AgentSecret) {
+			if !acceptCommand(cmd, cfg.AgentSecret) {
 				log.Printf("[Security] Rejected unsigned/invalid/stale command: %s", cmd.Action)
 				continue
 			}
@@ -346,7 +401,7 @@ func runAgentSession(ctx context.Context, cfg *Config, hwid string) (bool, error
 	// Heartbeat / Ping ticker
 	ticker := time.NewTicker(heartbeatInterval(cfg.PingIntervalSeconds))
 	defer ticker.Stop()
-	updateTicker := time.NewTicker(time.Minute)
+	updateTicker := time.NewTicker(15 * time.Second)
 	defer updateTicker.Stop()
 	updateNow := time.NewTimer(time.Second)
 	defer updateNow.Stop()
@@ -373,6 +428,9 @@ func runAgentSession(ctx context.Context, cfg *Config, hwid string) (bool, error
 				"time": time.Now().Format(time.RFC3339),
 			}
 			data, _ := json.Marshal(pingPayload)
+			if err := c.SetWriteDeadline(time.Now().Add(agentWriteTimeout)); err != nil {
+				return true, err
+			}
 			err := c.WriteMessage(websocket.TextMessage, data)
 			if err != nil {
 				log.Printf("[WS] Failed to write ping: %v", err)
@@ -380,7 +438,7 @@ func runAgentSession(ctx context.Context, cfg *Config, hwid string) (bool, error
 			}
 		case <-ctx.Done():
 			log.Println("[Agent] Interrupt received. Disconnecting...")
-			_ = c.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "Agent shutdown"))
+			_ = c.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "Agent shutdown"), time.Now().Add(agentWriteTimeout))
 			return true, nil
 		}
 	}
@@ -397,6 +455,7 @@ func heartbeatInterval(seconds int) time.Duration {
 }
 
 func setupAgentKeepalive(c *websocket.Conn, readTimeout time.Duration) error {
+	c.SetReadLimit(maxAgentCommandBytes)
 	if err := c.SetReadDeadline(time.Now().Add(readTimeout)); err != nil {
 		return err
 	}
@@ -420,8 +479,8 @@ func verifyCommand(cmd CommandMessage, secret string) bool {
 	}
 
 	// Reject stale/replayed commands outside the freshness window.
-	age := time.Now().Unix() - cmd.Timestamp
-	if age < -maxCommandAgeSeconds || age > maxCommandAgeSeconds {
+	now := time.Now().Unix()
+	if cmd.Timestamp < now-maxCommandAgeSeconds || cmd.Timestamp > now+maxCommandAgeSeconds {
 		return false
 	}
 
@@ -439,6 +498,27 @@ func verifyCommand(cmd CommandMessage, secret string) bool {
 
 	// Constant-time comparison to avoid timing side channels.
 	return hmac.Equal([]byte(expected), []byte(cmd.Signature))
+}
+
+// Keep replay protection across WebSocket reconnects. Backend command nonces
+// distinguish legitimate identical actions issued within the same second.
+func acceptCommand(cmd CommandMessage, secret string) bool {
+	if !verifyCommand(cmd, secret) {
+		return false
+	}
+	agentCommandReplayMu.Lock()
+	defer agentCommandReplayMu.Unlock()
+	now := time.Now().Unix()
+	for signature, expires := range agentCommandSignatures {
+		if expires < now {
+			delete(agentCommandSignatures, signature)
+		}
+	}
+	if _, seen := agentCommandSignatures[cmd.Signature]; seen {
+		return false
+	}
+	agentCommandSignatures[cmd.Signature] = cmd.Timestamp + maxCommandAgeSeconds
+	return true
 }
 
 func handleServerCommand(cmd CommandMessage) {
@@ -469,7 +549,7 @@ func handleServerCommand(cmd CommandMessage) {
 	}
 }
 
-func startStationLockOverlay() error {
+func startNativeStationLockOverlay() error {
 	ready := make(chan error, 1)
 	go runStationLockOverlay(ready)
 	return <-ready
@@ -486,13 +566,22 @@ func runStationLockOverlay(ready chan<- error) {
 		ready <- windowsCallError("GetModuleHandleW", callErr)
 		return
 	}
-	brush, _, _ := procGetStockObject.Call(4) // BLACK_BRUSH
+	stationPageBrush, _, _ = procCreateSolidBrush.Call(stationRGB(247, 245, 252))
+	stationCardBrush, _, _ = procCreateSolidBrush.Call(stationRGB(255, 255, 255))
+	stationInputBrush, _, _ = procCreateSolidBrush.Call(stationRGB(250, 249, 255))
+	if stationPageBrush == 0 || stationCardBrush == 0 || stationInputBrush == 0 {
+		ready <- fmt.Errorf("could not create station login colors")
+		return
+	}
+	defer procDeleteObject.Call(stationPageBrush)
+	defer procDeleteObject.Call(stationCardBrush)
+	defer procDeleteObject.Call(stationInputBrush)
 	wndClass := stationLockWndClass{
 		Size:       uint32(unsafe.Sizeof(stationLockWndClass{})),
 		Style:      0x0003, // CS_HREDRAW | CS_VREDRAW
 		WndProc:    stationLockOverlayProc,
 		Instance:   syscall.Handle(instance),
-		Background: syscall.Handle(brush),
+		Background: syscall.Handle(stationPageBrush),
 		ClassName:  className,
 	}
 	if atom, _, callErr := procRegisterClassExW.Call(uintptr(unsafe.Pointer(&wndClass))); atom == 0 {
@@ -501,7 +590,7 @@ func runStationLockOverlay(ready chan<- error) {
 	}
 
 	fontName, _ := syscall.UTF16PtrFromString("Segoe UI")
-	stationLockOverlayFont, _, _ = procCreateFontW.Call(36, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 4, 0, uintptr(unsafe.Pointer(fontName)))
+	stationLockOverlayFont, _, _ = procCreateFontW.Call(36, 0, 0, 0, 700, 0, 0, 0, 1, 0, 0, 4, 0, uintptr(unsafe.Pointer(fontName)))
 	if stationLockOverlayFont == 0 {
 		stationLockOverlayFont, _, _ = procGetStockObject.Call(17) // DEFAULT_GUI_FONT
 	}
@@ -516,7 +605,7 @@ func runStationLockOverlay(ready chan<- error) {
 		x, y = 0, 0
 	}
 	window, _, callErr := procCreateWindowExW.Call(
-		wsExTopmost|wsExToolWindow,
+		wsExTopmost|wsExToolWindow|wsExControlParent,
 		uintptr(unsafe.Pointer(className)),
 		uintptr(unsafe.Pointer(windowTitle)),
 		wsPopup,
@@ -545,6 +634,13 @@ func runStationLockOverlay(ready chan<- error) {
 			log.Printf("[Overlay] GetMessageW failed: %v", callErr)
 			return
 		}
+		if message.Message == wmKeyDown && message.WParam == vkReturn {
+			submitStationLogin()
+			continue
+		}
+		if handled, _, _ := procIsDialogMessageW.Call(stationLockOverlayWindow, uintptr(unsafe.Pointer(&message))); handled != 0 {
+			continue
+		}
 		procTranslateMessage.Call(uintptr(unsafe.Pointer(&message)))
 		procDispatchMessageW.Call(uintptr(unsafe.Pointer(&message)))
 	}
@@ -555,57 +651,226 @@ func systemMetric(index int32) uintptr {
 	return value
 }
 
+func stationRGB(red, green, blue byte) uintptr {
+	return uintptr(red) | uintptr(green)<<8 | uintptr(blue)<<16
+}
+
+func stationLoginCard(width, height int32) (x, y, cardWidth, cardHeight, leftWidth int32) {
+	cardWidth, cardHeight = width-40, height-40
+	if cardWidth > 1100 {
+		cardWidth = 1100
+	}
+	if cardHeight > 620 {
+		cardHeight = 620
+	}
+	if cardWidth >= 900 {
+		leftWidth = cardWidth / 2
+	}
+	return (width - cardWidth) / 2, (height - cardHeight) / 2, cardWidth, cardHeight, leftWidth
+}
+
+func stationFillRect(dc uintptr, rect stationLockRect, color uintptr) {
+	brush, _, _ := procCreateSolidBrush.Call(color)
+	if brush == 0 {
+		return
+	}
+	procFillRect.Call(dc, uintptr(unsafe.Pointer(&rect)), brush)
+	procDeleteObject.Call(brush)
+}
+
+func stationRoundRect(dc uintptr, rect stationLockRect, radius int32, color uintptr) {
+	brush, _, _ := procCreateSolidBrush.Call(color)
+	if brush == 0 {
+		return
+	}
+	pen, _, _ := procGetStockObject.Call(8) // NULL_PEN
+	oldBrush, _, _ := procSelectObject.Call(dc, brush)
+	oldPen, _, _ := procSelectObject.Call(dc, pen)
+	procRoundRect.Call(dc, uintptr(rect.Left), uintptr(rect.Top), uintptr(rect.Right), uintptr(rect.Bottom), uintptr(radius), uintptr(radius))
+	procSelectObject.Call(dc, oldPen)
+	procSelectObject.Call(dc, oldBrush)
+	procDeleteObject.Call(brush)
+}
+
+func stationEllipse(dc uintptr, rect stationLockRect, color uintptr) {
+	brush, _, _ := procCreateSolidBrush.Call(color)
+	if brush == 0 {
+		return
+	}
+	pen, _, _ := procGetStockObject.Call(8) // NULL_PEN
+	oldBrush, _, _ := procSelectObject.Call(dc, brush)
+	oldPen, _, _ := procSelectObject.Call(dc, pen)
+	procEllipse.Call(dc, uintptr(rect.Left), uintptr(rect.Top), uintptr(rect.Right), uintptr(rect.Bottom))
+	procSelectObject.Call(dc, oldPen)
+	procSelectObject.Call(dc, oldBrush)
+	procDeleteObject.Call(brush)
+}
+
+func stationDrawText(dc uintptr, value string, rect stationLockRect, font, color, flags uintptr) {
+	text, err := syscall.UTF16PtrFromString(value)
+	if err != nil {
+		return
+	}
+	oldFont, _, _ := procSelectObject.Call(dc, font)
+	procSetTextColor.Call(dc, color)
+	procSetBkMode.Call(dc, 1) // TRANSPARENT
+	procDrawTextW.Call(dc, uintptr(unsafe.Pointer(text)), ^uintptr(0), uintptr(unsafe.Pointer(&rect)), flags)
+	procSelectObject.Call(dc, oldFont)
+}
+
+func stationDrawInputFrame(dc uintptr, rect stationLockRect) {
+	stationRoundRect(dc, stationLockRect{rect.Left + 2, rect.Top + 5, rect.Right + 2, rect.Bottom + 5}, 30, stationRGB(232, 224, 246))
+	stationRoundRect(dc, rect, 30, stationRGB(221, 211, 241))
+	stationRoundRect(dc, stationLockRect{rect.Left + 1, rect.Top + 1, rect.Right - 1, rect.Bottom - 1}, 28, stationRGB(250, 249, 255))
+}
+
+func paintStationLogin(dc uintptr, width, height int32) {
+	page := stationLockRect{Right: width, Bottom: height}
+	procFillRect.Call(dc, uintptr(unsafe.Pointer(&page)), stationPageBrush)
+	stationEllipse(dc, stationLockRect{0, 0, 460, 460}, stationRGB(244, 238, 255))
+	stationEllipse(dc, stationLockRect{width - 520, height - 420, width, height}, stationRGB(238, 244, 255))
+	x, y, cardWidth, cardHeight, leftWidth := stationLoginCard(width, height)
+	stationRoundRect(dc, stationLockRect{x + 14, y + 20, x + cardWidth + 14, y + cardHeight + 20}, 48, stationRGB(220, 210, 238))
+	stationRoundRect(dc, stationLockRect{x + 6, y + 10, x + cardWidth + 6, y + cardHeight + 10}, 46, stationRGB(234, 228, 246))
+	stationRoundRect(dc, stationLockRect{x, y, x + cardWidth, y + cardHeight}, 44, stationRGB(255, 255, 255))
+	if leftWidth == 0 {
+		stationRoundRect(dc, stationLockRect{x + 30, y + 24, x + 92, y + 62}, 14, stationRGB(124, 58, 237))
+		stationDrawText(dc, "AUCC", stationLockRect{x + 37, y + 29, x + 85, y + 58}, stationLabelFont, stationRGB(255, 255, 255), dtCenter|dtVCenter|dtSingleLine)
+	} else {
+		stationRoundRect(dc, stationLockRect{x, y, x + leftWidth + 24, y + cardHeight}, 44, stationRGB(76, 29, 149))
+		stationEllipse(dc, stationLockRect{x + leftWidth - 230, y, x + leftWidth + 20, y + 250}, stationRGB(124, 58, 237))
+		stationEllipse(dc, stationLockRect{x, y + cardHeight - 250, x + 230, y + cardHeight}, stationRGB(91, 33, 182))
+		stationEllipse(dc, stationLockRect{x + 70, y + 150, x + 300, y + 380}, stationRGB(109, 40, 217))
+		stationFillRect(dc, stationLockRect{x + leftWidth, y, x + leftWidth + 24, y + cardHeight}, stationRGB(255, 255, 255))
+		stationRoundRect(dc, stationLockRect{x + 42, y + 38, x + 200, y + 82}, 22, stationRGB(139, 92, 246))
+		stationDrawText(dc, "STATION ACCESS", stationLockRect{x + 54, y + 44, x + 188, y + 76}, stationLabelFont, stationRGB(255, 255, 255), dtCenter|dtVCenter|dtSingleLine)
+		stationDrawText(dc, "Computer Lab\nAccess", stationLockRect{x + 46, y + cardHeight/2 - 56, x + leftWidth - 45, y + cardHeight/2 + 62}, stationLockOverlayFont, stationRGB(255, 255, 255), dtWordWrap)
+		stationDrawText(dc, "Sign in to reserve a station and manage your lab sessions.", stationLockRect{x + 46, y + cardHeight - 112, x + leftWidth - 45, y + cardHeight - 42}, stationAuthFont, stationRGB(238, 226, 255), dtWordWrap)
+	}
+	if stationAuthMode == "account" {
+		stationDrawInputFrame(dc, stationUsernameRect)
+		stationDrawInputFrame(dc, stationPasswordRect)
+	} else if stationAuthMode == "access_code" {
+		stationDrawInputFrame(dc, stationAccessCodeRect)
+	}
+	if stationAuthMode == "account" || stationAuthMode == "access_code" {
+		stationRoundRect(dc, stationLockRect{stationSubmitRect.Left + 2, stationSubmitRect.Top + 7, stationSubmitRect.Right + 2, stationSubmitRect.Bottom + 7}, 30, stationRGB(218, 203, 244))
+	}
+}
+
 func createStationAuthControls(parent uintptr, width, height int32, instance uintptr) error {
-	centerX, centerY := width/2, height/2
+	cardX, cardY, cardWidth, cardHeight, leftWidth := stationLoginCard(width, height)
+	rightX, rightWidth := cardX+leftWidth, cardWidth-leftWidth
+	margin := int32(56)
+	if rightWidth < 500 {
+		margin = 32
+	}
+	inputX, inputWidth := rightX+margin, rightWidth-2*margin
+	titleY, firstLabelY, inputHeight := cardY+72, cardY+210, int32(54)
+	if cardHeight < 520 {
+		titleY, firstLabelY, inputHeight = cardY+46, cardY+148, 38
+	}
+	firstInputY := firstLabelY + 27
+	secondLabelY := firstInputY + inputHeight + 24
+	secondInputY := secondLabelY + 27
+	buttonY := cardY + cardHeight - 132
+	if cardHeight < 520 {
+		buttonY = cardY + cardHeight - 116
+	}
+	stationUsernameRect = stationLockRect{inputX, firstInputY, inputX + inputWidth, firstInputY + inputHeight}
+	stationPasswordRect = stationLockRect{inputX, secondInputY, inputX + inputWidth, secondInputY + inputHeight}
+	stationAccessCodeRect = stationUsernameRect
+	stationSubmitRect = stationLockRect{inputX, buttonY, inputX + inputWidth, buttonY + 50}
+	const inputInset = int32(3)
+
 	stationAuthFont, _, _ = procCreateFontW.Call(20, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 4, 0, uintptr(unsafe.Pointer(mustUTF16("Segoe UI"))))
 	if stationAuthFont == 0 {
 		stationAuthFont, _, _ = procGetStockObject.Call(17)
 	}
+	stationLabelFont, _, _ = procCreateFontW.Call(16, 0, 0, 0, 700, 0, 0, 0, 1, 0, 0, 4, 0, uintptr(unsafe.Pointer(mustUTF16("Segoe UI"))))
+	if stationLabelFont == 0 {
+		stationLabelFont = stationAuthFont
+	}
+	stationButtonFont, _, _ = procCreateFontW.Call(19, 0, 0, 0, 700, 0, 0, 0, 1, 0, 0, 4, 0, uintptr(unsafe.Pointer(mustUTF16("Segoe UI"))))
+	if stationButtonFont == 0 {
+		stationButtonFont = stationAuthFont
+	}
 
 	var err error
-	stationTitleControl, err = createStationControl(parent, instance, "STATIC", "AUCC Station Login", wsChild|wsVisible|ssCenter, 0, 0, centerX-300, centerY-205, 600, 52)
+	stationTitleControl, err = createStationControl(parent, instance, "STATIC", "AUCC Station Login", wsChild|wsVisible, 0, 0, inputX, titleY, inputWidth, 52)
 	if err != nil {
 		return err
 	}
 	procSendMessageW.Call(stationTitleControl, wmSetFont, stationLockOverlayFont, 1)
-
-	stationAccountLabel, err = createStationControl(parent, instance, "STATIC", "Username", wsChild|wsVisible, 0, 0, centerX-180, centerY-126, 360, 26)
-	if err != nil {
-		return err
-	}
-	stationUsernameControl, err = createStationControl(parent, instance, "EDIT", "", wsChild|wsVisible|wsTabStop|wsBorder|esAutoHScroll, 0, 0, centerX-180, centerY-100, 360, 36)
-	if err != nil {
-		return err
-	}
-	stationPasswordLabel, err = createStationControl(parent, instance, "STATIC", "Password", wsChild|wsVisible, 0, 0, centerX-180, centerY-52, 360, 26)
-	if err != nil {
-		return err
-	}
-	stationPasswordControl, err = createStationControl(parent, instance, "EDIT", "", wsChild|wsVisible|wsTabStop|wsBorder|esAutoHScroll|esPassword, 0, 0, centerX-180, centerY-26, 360, 36)
-	if err != nil {
-		return err
-	}
-	stationCodeLabel, err = createStationControl(parent, instance, "STATIC", "Booking access code", wsChild|wsVisible, 0, 0, centerX-180, centerY-74, 360, 26)
-	if err != nil {
-		return err
-	}
-	stationAccessCodeControl, err = createStationControl(parent, instance, "EDIT", "", wsChild|wsVisible|wsTabStop|wsBorder|esAutoHScroll, 0, 0, centerX-120, centerY-48, 240, 38)
-	if err != nil {
-		return err
-	}
-	stationSubmitControl, err = createStationControl(parent, instance, "BUTTON", "Sign in", wsChild|wsVisible|wsTabStop|bsDefault, 0, stationLoginButtonID, centerX-80, centerY+48, 160, 42)
-	if err != nil {
-		return err
-	}
-	stationStatusControl, err = createStationControl(parent, instance, "STATIC", "", wsChild|wsVisible|ssCenter, 0, 0, centerX-300, centerY+104, 600, 40)
+	stationSubtitleControl, err = createStationControl(parent, instance, "STATIC", "Use your account or booking code to continue.", wsChild|wsVisible, 0, 0, inputX, titleY+56, inputWidth, 40)
 	if err != nil {
 		return err
 	}
 
-	for _, control := range []uintptr{stationAccountLabel, stationUsernameControl, stationPasswordLabel, stationPasswordControl, stationCodeLabel, stationAccessCodeControl, stationSubmitControl, stationStatusControl} {
+	stationAccountLabel, err = createStationControl(parent, instance, "STATIC", "IDENTITY", wsChild|wsVisible, 0, 0, inputX, firstLabelY, inputWidth, 24)
+	if err != nil {
+		return err
+	}
+	stationUsernameControl, err = createStationControl(parent, instance, "EDIT", "", wsChild|wsVisible|wsTabStop|esAutoHScroll, 0, 0, inputX+inputInset, firstInputY+inputInset, inputWidth-2*inputInset, inputHeight-2*inputInset)
+	if err != nil {
+		return err
+	}
+	stationPasswordLabel, err = createStationControl(parent, instance, "STATIC", "PASSWORD", wsChild|wsVisible, 0, 0, inputX, secondLabelY, inputWidth, 24)
+	if err != nil {
+		return err
+	}
+	stationPasswordControl, err = createStationControl(parent, instance, "EDIT", "", wsChild|wsVisible|wsTabStop|esAutoHScroll|esPassword, 0, 0, inputX+inputInset, secondInputY+inputInset, inputWidth-2*inputInset, inputHeight-2*inputInset)
+	if err != nil {
+		return err
+	}
+	stationCodeLabel, err = createStationControl(parent, instance, "STATIC", "BOOKING ACCESS CODE", wsChild|wsVisible, 0, 0, inputX, firstLabelY, inputWidth, 24)
+	if err != nil {
+		return err
+	}
+	stationAccessCodeControl, err = createStationControl(parent, instance, "EDIT", "", wsChild|wsVisible|wsTabStop|esAutoHScroll, 0, 0, inputX+inputInset, firstInputY+inputInset, inputWidth-2*inputInset, inputHeight-2*inputInset)
+	if err != nil {
+		return err
+	}
+	stationSubmitControl, err = createStationControl(parent, instance, "BUTTON", "Sign in", wsChild|wsVisible|wsTabStop|bsOwnerDraw, 0, stationLoginButtonID, inputX, buttonY, inputWidth, 50)
+	if err != nil {
+		return err
+	}
+	stationStatusControl, err = createStationControl(parent, instance, "STATIC", "", wsChild|wsVisible|ssCenter, 0, 0, inputX, buttonY+62, inputWidth, 52)
+	if err != nil {
+		return err
+	}
+
+	for _, control := range []uintptr{stationSubtitleControl, stationUsernameControl, stationPasswordControl, stationAccessCodeControl, stationStatusControl} {
 		procSendMessageW.Call(control, wmSetFont, stationAuthFont, 1)
 	}
+	setStationCueBanner(stationUsernameControl, "Username")
+	setStationCueBanner(stationPasswordControl, "Password")
+	setStationCueBanner(stationAccessCodeControl, "6-digit access code")
+	for _, control := range []uintptr{stationUsernameControl, stationPasswordControl, stationAccessCodeControl} {
+		procSendMessageW.Call(control, emSetMargins, ecLeftMargin|ecRightMargin, 18|18<<16)
+		region, _, _ := procCreateRoundRectRgn.Call(0, 0, uintptr(inputWidth-2*inputInset), uintptr(inputHeight-2*inputInset), 26, 26)
+		if region != 0 {
+			procSetWindowRgn.Call(control, region, 1)
+		}
+	}
+	buttonRegion, _, _ := procCreateRoundRectRgn.Call(0, 0, uintptr(inputWidth), 50, 30, 30)
+	if buttonRegion != 0 {
+		procSetWindowRgn.Call(stationSubmitControl, buttonRegion, 1)
+	}
+	for _, control := range []uintptr{stationAccountLabel, stationPasswordLabel, stationCodeLabel} {
+		procSendMessageW.Call(control, wmSetFont, stationLabelFont, 1)
+	}
 	return nil
+}
+
+func setStationCueBanner(control uintptr, value string) {
+	if control == 0 {
+		return
+	}
+	text, err := syscall.UTF16PtrFromString(value)
+	if err == nil {
+		procSendMessageW.Call(control, emSetCueBanner, 0, uintptr(unsafe.Pointer(text)))
+	}
 }
 
 func createStationControl(parent, instance uintptr, className, title string, style, extendedStyle, controlID uintptr, x, y, width, height int32) (uintptr, error) {
@@ -637,6 +902,10 @@ func mustUTF16(value string) *uint16 {
 }
 
 func setStationAuthMode(mode string) {
+	if stationWebView != nil {
+		setStationWebAuthMode(mode)
+		return
+	}
 	if stationLockOverlayWindow == 0 {
 		return
 	}
@@ -679,18 +948,22 @@ func applyStationAuthMode(mode string) {
 	setStationControlText(stationSubmitControl, "Sign in")
 	setStationControlText(stationStatusControl, "Connecting to booking server...")
 	if mode == "account" {
-		setStationControlText(stationTitleControl, "Sign in to this station")
+		setStationControlText(stationTitleControl, "System Access")
+		setStationControlText(stationSubtitleControl, "Enter your account credentials to continue.")
 		setStationControlText(stationSubmitControl, "Sign in")
 		setStationControlText(stationStatusControl, "No active reservation. Use your username and password.")
 		procSetFocus.Call(stationUsernameControl)
 	} else if mode == "access_code" {
-		setStationControlText(stationTitleControl, "This station is reserved")
+		setStationControlText(stationTitleControl, "Reservation Access")
+		setStationControlText(stationSubtitleControl, "This station is reserved for a booking.")
 		setStationControlText(stationSubmitControl, "Enter station")
 		setStationControlText(stationStatusControl, "Enter the six-digit code for this station.")
 		procSetFocus.Call(stationAccessCodeControl)
 	} else {
-		setStationControlText(stationTitleControl, "AUCC Station Login")
+		setStationControlText(stationTitleControl, "Connecting...")
+		setStationControlText(stationSubtitleControl, "Waiting for the station server.")
 	}
+	procInvalidateRect.Call(stationLockOverlayWindow, 0, 1)
 }
 
 func shouldEnableStationLoginButton(mode string, pending bool) bool {
@@ -803,12 +1076,11 @@ func authenticateStation(config *Config, hwid string, login map[string]string) e
 	request.Header.Set("X-Computer-Name", config.MachineName)
 	request.Header.Set("X-Computer-HWID", hwid)
 	request.Header.Set("X-Agent-Secret", config.AgentSecret)
-	response, err := (&http.Client{
-		Timeout: 10 * time.Second,
-		CheckRedirect: func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}).Do(request)
+	client, err := agentHTTPClient(config, 10*time.Second)
+	if err != nil {
+		return err
+	}
+	response, err := client.Do(request)
 	if err != nil {
 		return err
 	}
@@ -823,9 +1095,38 @@ func stationLoginURL(serverURL string) (string, error) {
 	return stationAPIURL(serverURL, "/api/agent/login")
 }
 
+func agentTLSConfig(cfg *Config) (*tls.Config, error) {
+	if cfg.ServerCAFile == "" {
+		return nil, nil
+	}
+	pem, err := os.ReadFile(cfg.ServerCAFile)
+	if err != nil {
+		return nil, fmt.Errorf("read server certificate: %w", err)
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(pem) {
+		return nil, fmt.Errorf("server certificate is not valid PEM")
+	}
+	return &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots}, nil
+}
+
+func agentHTTPClient(cfg *Config, timeout time.Duration) (*http.Client, error) {
+	tlsConfig, err := agentTLSConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSClientConfig = tlsConfig
+	return &http.Client{
+		Transport:     transport,
+		Timeout:       timeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}, nil
+}
+
 func stationAPIURL(serverURL, path string) (string, error) {
 	endpoint, err := url.Parse(serverURL)
-	if err != nil || endpoint.Host == "" {
+	if err != nil || endpoint.Host == "" || endpoint.User != nil {
 		return "", fmt.Errorf("invalid server URL")
 	}
 	switch endpoint.Scheme {
@@ -862,7 +1163,11 @@ func enrollAgent(ctx context.Context, cfg *Config, hwid string) error {
 		return err
 	}
 	request.Header.Set("Content-Type", "application/json")
-	response, err := (&http.Client{Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}).Do(request)
+	client, err := agentHTTPClient(cfg, 10*time.Second)
+	if err != nil {
+		return err
+	}
+	response, err := client.Do(request)
 	if err != nil {
 		return err
 	}
@@ -880,6 +1185,10 @@ func enrollAgent(ctx context.Context, cfg *Config, hwid string) error {
 }
 
 func setStationLocked(locked bool) {
+	if stationWebView != nil {
+		setStationWebLocked(locked)
+		return
+	}
 	if stationLockOverlayWindow == 0 {
 		log.Println("[Overlay] Ignoring lock command because the overlay is unavailable.")
 		return
@@ -951,10 +1260,40 @@ func stationLockOverlayWindowProc(window, message, wParam, lParam uintptr) uintp
 			return 0
 		}
 	case wmCtlColorStatic:
-		procSetTextColor.Call(wParam, 0x00FFFFFF)
-		procSetBkMode.Call(wParam, 1)
-		brush, _, _ := procGetStockObject.Call(4)
-		return brush
+		color := stationRGB(100, 116, 139)
+		if lParam == stationTitleControl {
+			color = stationRGB(15, 23, 42)
+		} else if lParam == stationAccountLabel || lParam == stationPasswordLabel || lParam == stationCodeLabel {
+			color = stationRGB(109, 40, 217)
+		} else if lParam == stationStatusControl {
+			status := strings.ToLower(stationControlText(stationStatusControl))
+			if strings.Contains(status, "failed") || strings.Contains(status, "enter both") || strings.Contains(status, "not ready") {
+				color = stationRGB(190, 24, 93)
+			}
+		}
+		procSetTextColor.Call(wParam, color)
+		procSetBkColor.Call(wParam, stationRGB(255, 255, 255))
+		return stationCardBrush
+	case wmCtlColorEdit:
+		procSetTextColor.Call(wParam, stationRGB(15, 23, 42))
+		procSetBkColor.Call(wParam, stationRGB(250, 249, 255))
+		return stationInputBrush
+	case wmDrawItem:
+		if lParam == 0 {
+			return 0
+		}
+		item := (*stationDrawItem)(unsafe.Pointer(lParam))
+		if item.CtlID == stationLoginButtonID {
+			color := stationRGB(124, 58, 237)
+			if item.ItemState&4 != 0 { // ODS_DISABLED
+				color = stationRGB(184, 166, 216)
+			} else if item.ItemState&1 != 0 { // ODS_SELECTED
+				color = stationRGB(109, 40, 217)
+			}
+			stationRoundRect(item.DC, item.Rect, 30, color)
+			stationDrawText(item.DC, stationControlText(stationSubmitControl), item.Rect, stationButtonFont, stationRGB(255, 255, 255), dtCenter|dtVCenter|dtSingleLine)
+			return 1
+		}
 	case wmClose:
 		return 0
 	case wmSysCommand:
@@ -971,8 +1310,7 @@ func stationLockOverlayWindowProc(window, message, wParam, lParam uintptr) uintp
 		}
 		var rect stationLockRect
 		procGetClientRect.Call(window, uintptr(unsafe.Pointer(&rect)))
-		brush, _, _ := procGetStockObject.Call(4)
-		procFillRect.Call(dc, uintptr(unsafe.Pointer(&rect)), brush)
+		paintStationLogin(dc, rect.Right-rect.Left, rect.Bottom-rect.Top)
 		procEndPaint.Call(window, uintptr(unsafe.Pointer(&paint)))
 		return 0
 	}
@@ -1062,8 +1400,19 @@ func loadConfig() (*Config, error) {
 		if err != nil {
 			return nil, fmt.Errorf("read %s: %w", configPath, err)
 		}
+		if err := protectStationConfig(configPath); err != nil {
+			return nil, fmt.Errorf("protect station credential file: %w", err)
+		}
 		if err := json.Unmarshal(data, cfg); err != nil {
 			return nil, fmt.Errorf("parse %s: %w", configPath, err)
+		}
+		if cfg.ServerCAFile == "" {
+			if exePath, err := os.Executable(); err == nil {
+				caPath := filepath.Join(filepath.Dir(exePath), "server-ca.pem")
+				if _, err := os.Stat(caPath); err == nil {
+					cfg.ServerCAFile = caPath
+				}
+			}
 		}
 		if cfg.AutoEnroll && cfg.AgentSecret == "" {
 			return completeAutoEnrollmentConfig(cfg, configPath)
@@ -1108,7 +1457,7 @@ func completeAutoEnrollmentConfig(cfg *Config, path string) (*Config, error) {
 		return nil, fmt.Errorf("create station settings: %w", err)
 	}
 	defer os.Remove(tmp.Name())
-	if err := tmp.Chmod(0600); err != nil {
+	if err := protectStationConfig(tmp.Name()); err != nil {
 		_ = tmp.Close()
 		return nil, err
 	}

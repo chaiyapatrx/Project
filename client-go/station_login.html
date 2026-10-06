@@ -1,0 +1,347 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>AUCC Station Access</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: "Segoe UI Variable", "Segoe UI", sans-serif;
+      color: #172033;
+      background: #f6f4fb;
+    }
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+    body {
+      display: grid;
+      place-items: center;
+      background:
+        radial-gradient(circle at 9% 12%, rgba(139,92,246,.16), transparent 25rem),
+        radial-gradient(circle at 92% 88%, rgba(59,130,246,.12), transparent 28rem),
+        linear-gradient(135deg, #faf9fe 0%, #f4f3fa 54%, #f8faff 100%);
+    }
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      opacity: .38;
+      pointer-events: none;
+      background-image: radial-gradient(#b8abd5 1px, transparent 1px);
+      background-size: 24px 24px;
+      mask-image: linear-gradient(to bottom right, #000, transparent 70%);
+    }
+    .shell {
+      position: relative;
+      display: grid;
+      grid-template-columns: minmax(360px, .96fr) minmax(430px, 1.04fr);
+      width: min(1120px, calc(100vw - 64px));
+      height: min(660px, calc(100vh - 64px));
+      min-height: 560px;
+      overflow: hidden;
+      border: 1px solid rgba(255,255,255,.88);
+      border-radius: 34px;
+      background: rgba(255,255,255,.94);
+      box-shadow: 0 34px 90px rgba(55,34,93,.20), 0 8px 26px rgba(30,41,59,.08);
+    }
+    .art {
+      position: relative;
+      overflow: hidden;
+      padding: 44px;
+      color: white;
+      background: linear-gradient(145deg, #4c1d95 0%, #6d28d9 44%, #7c3aed 100%);
+      isolation: isolate;
+    }
+    .art::before, .art::after {
+      content: "";
+      position: absolute;
+      border-radius: 999px;
+      filter: blur(1px);
+      z-index: -1;
+    }
+    .art::before {
+      width: 420px; height: 420px; right: -190px; top: -150px;
+      background: linear-gradient(135deg, rgba(196,181,253,.72), rgba(124,58,237,.06));
+    }
+    .art::after {
+      width: 380px; height: 380px; left: -190px; bottom: -200px;
+      background: rgba(49,18,101,.52);
+    }
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 11px;
+      font-size: 15px;
+      font-weight: 750;
+      letter-spacing: .04em;
+    }
+    .brand-mark {
+      display: grid;
+      place-items: center;
+      width: 42px; height: 42px;
+      border: 1px solid rgba(255,255,255,.28);
+      border-radius: 14px;
+      background: rgba(255,255,255,.15);
+      box-shadow: inset 0 1px rgba(255,255,255,.18), 0 10px 30px rgba(31,13,63,.2);
+      backdrop-filter: blur(12px);
+    }
+    .art-copy { position: absolute; left: 44px; right: 44px; top: 50%; transform: translateY(-52%); }
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 18px;
+      padding: 8px 12px;
+      border: 1px solid rgba(255,255,255,.22);
+      border-radius: 999px;
+      background: rgba(255,255,255,.12);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: .09em;
+      text-transform: uppercase;
+    }
+    .dot { width: 7px; height: 7px; border-radius: 99px; background: #86efac; box-shadow: 0 0 0 5px rgba(134,239,172,.13); }
+    .art h1 { max-width: 410px; margin: 0; font-size: clamp(38px, 4vw, 58px); line-height: 1.02; letter-spacing: -.045em; }
+    .art p { max-width: 390px; margin: 22px 0 0; color: rgba(255,255,255,.76); font-size: 16px; line-height: 1.7; }
+    .art-footer {
+      position: absolute; left: 44px; right: 44px; bottom: 38px;
+      display: flex; align-items: center; gap: 11px;
+      color: rgba(255,255,255,.69); font-size: 13px;
+    }
+    .form-side { display: grid; align-items: center; padding: 54px clamp(42px, 5vw, 74px); }
+    .form-wrap { width: 100%; max-width: 440px; margin: auto; }
+    .kicker { margin: 0 0 9px; color: #7c3aed; font-size: 13px; font-weight: 800; letter-spacing: .11em; text-transform: uppercase; }
+    h2 { margin: 0; color: #171e2f; font-size: 35px; line-height: 1.16; letter-spacing: -.035em; }
+    .subtitle { min-height: 48px; margin: 12px 0 28px; color: #697386; font-size: 15px; line-height: 1.65; }
+    .field { margin-top: 18px; }
+    label { display: block; margin: 0 0 8px 2px; color: #3d4659; font-size: 13px; font-weight: 700; }
+    .input-wrap { position: relative; }
+    .input-icon {
+      position: absolute; left: 16px; top: 50%; width: 20px; height: 20px;
+      color: #8a94a7; transform: translateY(-50%); pointer-events: none;
+    }
+    input {
+      width: 100%; height: 54px;
+      padding: 0 16px 0 48px;
+      border: 1px solid #dfe3ec;
+      border-radius: 15px;
+      outline: none;
+      color: #1f2937;
+      background: #fbfcfe;
+      font: inherit;
+      transition: border-color .16s, box-shadow .16s, background .16s;
+    }
+    input::placeholder { color: #a0a8b7; }
+    input:hover { border-color: #c9c1db; background: white; }
+    input:focus { border-color: #8b5cf6; background: white; box-shadow: 0 0 0 4px rgba(139,92,246,.13); }
+    button {
+      width: 100%; height: 54px; margin-top: 25px;
+      border: 0; border-radius: 15px;
+      color: white;
+      background: linear-gradient(135deg, #7c3aed, #6d28d9);
+      box-shadow: 0 13px 28px rgba(109,40,217,.25);
+      font: inherit;
+      font-size: 15px;
+      font-weight: 750;
+      cursor: pointer;
+      transition: transform .14s, box-shadow .14s, filter .14s;
+    }
+    button:hover { filter: brightness(1.05); box-shadow: 0 16px 34px rgba(109,40,217,.31); transform: translateY(-1px); }
+    button:active { transform: translateY(1px); }
+    button:focus-visible { outline: 3px solid rgba(139,92,246,.28); outline-offset: 3px; }
+    button:disabled { cursor: wait; filter: grayscale(.18); opacity: .68; transform: none; }
+    .status {
+      display: flex; align-items: flex-start; gap: 9px;
+      min-height: 42px; margin: 17px 2px 0;
+      color: #7b8495; font-size: 13px; line-height: 1.45;
+    }
+    .status svg { flex: 0 0 auto; width: 17px; height: 17px; margin-top: 1px; color: #8b5cf6; }
+    .status.error { color: #be185d; }
+    .status.success { color: #047857; }
+    .connecting { padding: 30px 0; text-align: center; }
+    .spinner {
+      width: 52px; height: 52px; margin: 0 auto 24px;
+      border: 5px solid #eee9f8; border-top-color: #7c3aed; border-radius: 50%;
+      animation: spin .85s linear infinite;
+    }
+    .connecting h2 { font-size: 30px; }
+    .connecting p { margin: 12px 0 0; color: #7b8495; line-height: 1.65; }
+    .hidden { display: none !important; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @media (max-width: 850px) {
+      .shell { grid-template-columns: 1fr; width: min(590px, calc(100vw - 40px)); height: auto; min-height: 0; }
+      .art { display: none; }
+      .form-side { min-height: min(620px, calc(100vh - 40px)); padding: 42px; }
+    }
+    @media (max-height: 650px) {
+      .shell { height: calc(100vh - 28px); min-height: 0; }
+      .form-side { padding-top: 30px; padding-bottom: 30px; }
+      .subtitle { margin-bottom: 14px; }
+      .field { margin-top: 12px; }
+      button { margin-top: 18px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell" aria-live="polite">
+    <section class="art" aria-hidden="true">
+      <div class="brand">
+        <span class="brand-mark">
+          <svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+        </span>
+        AUCC&nbsp; LAB SYSTEM
+      </div>
+      <div class="art-copy">
+        <div class="eyebrow"><span class="dot"></span> Station ready</div>
+        <h1>Your workspace,<br>ready when you are.</h1>
+        <p>Sign in securely to access this computer and continue your reserved lab session.</p>
+      </div>
+      <div class="art-footer">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
+        Protected access for authorized users
+      </div>
+    </section>
+
+    <section class="form-side">
+      <div class="form-wrap">
+        <div id="connecting" class="connecting">
+          <div class="spinner"></div>
+          <h2>Connecting</h2>
+          <p>Preparing this station and checking<br>the booking server.</p>
+        </div>
+
+        <form id="login-form" class="hidden" autocomplete="off">
+          <p id="kicker" class="kicker">Station access</p>
+          <h2 id="title">System Access</h2>
+          <p id="subtitle" class="subtitle">Enter your account credentials to continue.</p>
+
+          <div id="account-fields">
+            <div class="field">
+              <label for="username">Username</label>
+              <div class="input-wrap">
+                <svg class="input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 21a8 8 0 0 0-16 0"/><circle cx="12" cy="7" r="4"/></svg>
+                <input id="username" name="username" placeholder="Enter your username" spellcheck="false">
+              </div>
+            </div>
+            <div class="field">
+              <label for="password">Password</label>
+              <div class="input-wrap">
+                <svg class="input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
+                <input id="password" name="password" type="password" placeholder="Enter your password">
+              </div>
+            </div>
+          </div>
+
+          <div id="code-fields" class="hidden">
+            <div class="field">
+              <label for="access-code">Booking access code</label>
+              <div class="input-wrap">
+                <svg class="input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="M7 10h.01M11 10h.01M15 10h2M7 14h4M15 14h2"/></svg>
+                <input id="access-code" name="access-code" inputmode="numeric" maxlength="6" placeholder="Enter 6-digit code">
+              </div>
+            </div>
+          </div>
+
+          <button id="submit" type="submit">Sign in</button>
+          <div id="status" class="status">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+            <span id="status-text">Use your username and password to unlock this station.</span>
+          </div>
+        </form>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const $ = id => document.getElementById(id);
+    const form = $('login-form');
+    const submit = $('submit');
+    const status = $('status');
+    let mode = 'connecting';
+
+    function setStatus(message, kind = '') {
+      $('status-text').textContent = message;
+      status.className = `status ${kind}`;
+    }
+
+    window.stationSetMode = nextMode => {
+      const previousMode = mode;
+      mode = nextMode;
+      if (previousMode !== mode) {
+        $('username').value = '';
+        $('password').value = '';
+        $('access-code').value = '';
+      }
+      const ready = mode === 'account' || mode === 'access_code';
+      $('connecting').classList.toggle('hidden', ready);
+      form.classList.toggle('hidden', !ready);
+      $('account-fields').classList.toggle('hidden', mode !== 'account');
+      $('code-fields').classList.toggle('hidden', mode !== 'access_code');
+      submit.disabled = false;
+      if (mode === 'account') {
+        $('kicker').textContent = 'Station access';
+        $('title').textContent = 'System Access';
+        $('subtitle').textContent = 'Enter your account credentials to continue.';
+        submit.textContent = 'Sign in';
+        setStatus('Use your username and password to unlock this station.');
+      } else if (mode === 'access_code') {
+        $('kicker').textContent = 'Reserved station';
+        $('title').textContent = 'Reservation Access';
+        $('subtitle').textContent = 'This computer is reserved for an active booking.';
+        submit.textContent = 'Enter station';
+        setStatus('Enter the six-digit code from your reservation.');
+      }
+      window.stationFocus();
+    };
+
+    window.stationFocus = () => {
+      setTimeout(() => (mode === 'account' ? $('username') : $('access-code')).focus(), 40);
+    };
+
+    window.stationReset = () => {
+      form.reset();
+      submit.disabled = false;
+      status.className = 'status';
+    };
+
+    window.stationLoginResult = (ok, message) => {
+      submit.disabled = ok;
+      submit.textContent = ok ? 'Access granted' : (mode === 'account' ? 'Sign in' : 'Enter station');
+      setStatus(message, ok ? 'success' : 'error');
+      if (!ok) {
+        $('password').value = '';
+        $('access-code').value = '';
+        (mode === 'account' ? $('password') : $('access-code')).focus();
+      }
+    };
+
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+      if (submit.disabled) return;
+      submit.disabled = true;
+      submit.textContent = 'Checking…';
+      setStatus('Checking your access with the booking server…');
+      try {
+        await window.stationLogin({
+          mode,
+          username: $('username').value,
+          password: $('password').value,
+          access_code: $('access-code').value
+        });
+      } catch (error) {
+        submit.disabled = false;
+        submit.textContent = mode === 'account' ? 'Sign in' : 'Enter station';
+        setStatus(String(error), 'error');
+      }
+    });
+
+    $('access-code').addEventListener('input', event => {
+      event.target.value = event.target.value.replace(/\D/g, '').slice(0, 6);
+    });
+    document.addEventListener('contextmenu', event => event.preventDefault());
+    document.addEventListener('keydown', event => {
+      if (event.key === 'F5' || (event.ctrlKey && ['r', 'l', 'u'].includes(event.key.toLowerCase()))) event.preventDefault();
+    });
+  </script>
+</body>
+</html>

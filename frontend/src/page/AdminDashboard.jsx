@@ -39,11 +39,13 @@ const styles = `
 function AdminDashboard() {
     const { user, logout } = useAuth();
     // Initialize from localStorage or default to 'overview'
-    const [activeTab, setActiveTabState] = useState(() => localStorage.getItem('adminActiveTab') || 'overview');
+    const [activeTab, setActiveTabState] = useState(() => {
+        try { return localStorage.getItem('adminActiveTab') || 'overview'; } catch { return 'overview'; }
+    });
 
     const setActiveTab = (tab) => {
         setActiveTabState(tab);
-        localStorage.setItem('adminActiveTab', tab);
+        try { localStorage.setItem('adminActiveTab', tab); } catch { /* Storage may be unavailable. */ }
     };
 
     const renderContent = () => {

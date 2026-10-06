@@ -8,17 +8,10 @@
 // may still use the Authorization: Bearer header.
 
 export function getBaseUrl() {
-  const configuredUrl = import.meta.env.VITE_API_BASE_URL;
+  const configuredUrl = import.meta.env?.VITE_API_BASE_URL;
   if (configuredUrl) return configuredUrl.replace(/\/$/, '');
 
   if (typeof window !== 'undefined') {
-    if (window.electronConfig && window.electronConfig.api_base_url) {
-      return window.electronConfig.api_base_url.replace(/\/$/, '');
-    }
-    if (window.electronAPI && window.electronConfig && window.electronConfig.server_ip) {
-      const scheme = window.location?.protocol === 'https:' ? 'https' : 'http';
-      return `${scheme}://${window.electronConfig.server_ip}:8000`;
-    }
     const hostname = window.location?.hostname;
     if (hostname && hostname !== 'localhost') {
       if (window.location?.protocol === 'https:') return window.location.origin;
@@ -33,10 +26,13 @@ export function getBaseUrl() {
 // stored Bearer token; browser clients use only the HttpOnly session cookie.
 export async function apiFetch(path, { method = 'GET', user = null, headers = {}, body } = {}) {
   const baseUrl = getBaseUrl();
-  const url = path.startsWith('http') ? path : `${baseUrl}${path}`;
+  const url = new URL(path, `${baseUrl}/`);
+  if (!['http:', 'https:'].includes(url.protocol) || url.origin !== new URL(baseUrl).origin) {
+    throw new Error('API requests must use the configured server origin');
+  }
 
   let currentUser = user;
-  if (!currentUser && typeof window !== 'undefined' && window.localStorage) {
+  if (!currentUser && typeof window !== 'undefined') {
     try {
       const stored = localStorage.getItem('user_data');
       if (stored) {
@@ -56,26 +52,35 @@ export async function apiFetch(path, { method = 'GET', user = null, headers = {}
 
   // Attach CSRF token for unsafe methods.
   const unsafe = !['GET', 'HEAD', 'OPTIONS'].includes(method.toUpperCase());
-  if (unsafe && currentUser && currentUser.csrfToken && !finalHeaders['X-CSRF-Token']) {
-    finalHeaders['X-CSRF-Token'] = currentUser.csrfToken;
+  if (unsafe && !finalHeaders['X-CSRF-Token']) {
+    const cookieToken = typeof document !== 'undefined'
+      ? document.cookie.split('; ').find(cookie => cookie.startsWith('csrf_token='))?.slice('csrf_token='.length)
+      : null;
+    const csrfToken = cookieToken || currentUser?.csrfToken;
+    if (csrfToken) finalHeaders['X-CSRF-Token'] = csrfToken;
   }
 
-  return fetch(url, {
+  const response = await fetch(url, {
     method,
     credentials: 'include',
     headers: finalHeaders,
     body,
   });
+  if (response.status === 401 && typeof window !== 'undefined' && !['/api/auth/login', '/token'].includes(url.pathname)) {
+    window.dispatchEvent(new Event('aucc:session-expired'));
+  }
+  return response;
 }
 
 // logoutRequest clears the server-side session cookies.
 export async function logoutRequest(user) {
   try {
     const response = await apiFetch('/api/auth/logout', { method: 'POST', user });
-    if (!response.ok) throw new Error(`Logout failed: ${response.status}`);
+    // An expired/revoked session is already signed out.
+    if (!response.ok && response.status !== 401) throw new Error(`Logout failed: ${response.status}`);
     return true;
   } catch (e) {
-    // Best-effort; local state is cleared regardless.
+    // Keep the caller informed so it does not report a successful sign-out.
     console.error('Logout request failed:', e);
     return false;
   }

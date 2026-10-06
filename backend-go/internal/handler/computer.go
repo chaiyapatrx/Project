@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -164,6 +165,25 @@ func (h *ComputerHandler) ApproveAgent(c *gin.Context) {
 	}
 	recordAudit(c, h.db, "agent_enrollment_approved", "computer", strconv.Itoa(id), "Admin approved agent enrollment")
 	c.JSON(http.StatusOK, gin.H{"status": "approved"})
+}
+
+func (h *ComputerHandler) RejectPendingAgent(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil || id <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid station ID"})
+		return
+	}
+	result, err := h.db.Exec("DELETE FROM computers WHERE id = ? AND pending_approval = 1 AND is_active = 0", id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to reject station"})
+		return
+	}
+	if rows, _ := result.RowsAffected(); rows != 1 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Pending station not found"})
+		return
+	}
+	recordAudit(c, h.db, "agent_enrollment_rejected", "computer", strconv.Itoa(id), "Admin rejected pending agent enrollment")
+	c.JSON(http.StatusOK, gin.H{"status": "rejected"})
 }
 
 func (h *ComputerHandler) CreateComputer(c *gin.Context) {
@@ -353,18 +373,21 @@ func (h *ComputerHandler) UpdateComputer(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update computer"})
 		return
 	}
+	// Hold the Hub lock across commit so a new login or booking cannot publish
+	// its in-use state before this status change publishes its older value.
+	h.hub.Mu.Lock()
 	if err := tx.Commit(); err != nil {
+		h.hub.Mu.Unlock()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update computer"})
 		return
 	}
 
 	// Update In-Memory Hub state & broadcast change
-	h.hub.Mu.Lock()
 	if state, exists := h.hub.Computers[oldComp.Name]; exists {
 		state.Status = newStatus
-		go h.hub.BroadcastStateChange(state.Name)
 	}
 	h.hub.Mu.Unlock()
+	h.hub.BroadcastStateChange(oldComp.Name)
 	recordAudit(c, h.db, "computer_status_changed", "computer", strconv.Itoa(id), "Station status changed to "+newStatus)
 
 	c.JSON(http.StatusOK, gin.H{"message": "Computer updated successfully"})
@@ -483,10 +506,20 @@ func (h *ComputerHandler) SendCommand(c *gin.Context) {
 		return
 	}
 
-	// Dispatch instantly via Go Hub (Latency < 2ms)
-	success := h.hub.SendCommandToAgent(comp.Name, command, map[string]interface{}{
-		"initiated_by": c.GetString("username"),
-	})
+	// Logging out, restarting, or shutting down ends a walk-in session so the
+	// station returns to a clean login state on its next connection.
+	var success, sessionEnded bool
+	if command == "LOGOUT" || command == "REBOOT" || command == "SHUTDOWN" {
+		success, sessionEnded, err = h.endStationSession(comp.ID, command, c.GetString("username"))
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not end station session"})
+			return
+		}
+	} else {
+		success = h.hub.SendCommandToAgent(comp.Name, command, map[string]interface{}{
+			"initiated_by": c.GetString("username"),
+		})
+	}
 
 	// Log to audit_logs
 	details := fmt.Sprintf("Command '%s' sent. Delivered: %v", command, success)
@@ -501,15 +534,18 @@ func (h *ComputerHandler) SendCommand(c *gin.Context) {
 
 	status := http.StatusOK
 	message := "Command dispatched"
-	if !success {
+	if !success && !sessionEnded {
 		status = http.StatusServiceUnavailable
 		message = "Command was not delivered"
+	} else if sessionEnded {
+		message = "Station session ended"
 	}
 	c.JSON(status, gin.H{
-		"message":   message,
-		"delivered": success,
-		"computer":  comp.Name,
-		"command":   command,
+		"message":       message,
+		"delivered":     success,
+		"session_ended": sessionEnded,
+		"computer":      comp.Name,
+		"command":       command,
 	})
 }
 
@@ -546,7 +582,29 @@ func (h *ComputerHandler) BroadcastCommand(c *gin.Context) {
 	}
 	req.Data["initiated_by"] = c.GetString("username")
 
-	count := h.hub.BroadcastCommandToAllAgents(cmd, req.Data)
+	count, endedCount := 0, 0
+	if cmd == "LOGOUT" || cmd == "REBOOT" || cmd == "SHUTDOWN" {
+		var ids []int
+		if err := h.db.Select(&ids, "SELECT id FROM computers WHERE is_active = 1"); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not list stations"})
+			return
+		}
+		for _, id := range ids {
+			delivered, ended, err := h.endStationSession(id, cmd, c.GetString("username"))
+			if err != nil {
+				log.Printf("[Station] Logout failed for computer %d: %v", id, err)
+				continue
+			}
+			if delivered {
+				count++
+			}
+			if ended {
+				endedCount++
+			}
+		}
+	} else {
+		count = h.hub.BroadcastCommandToAllAgents(cmd, req.Data)
+	}
 
 	// Log audit
 	userID := c.GetInt("user_id")
@@ -560,15 +618,102 @@ func (h *ComputerHandler) BroadcastCommand(c *gin.Context) {
 	)
 
 	c.JSON(http.StatusOK, gin.H{
-		"message":         "Broadcast command processed",
-		"command":         cmd,
-		"delivered_count": count,
+		"message":              "Broadcast command processed",
+		"command":              cmd,
+		"delivered_count":      count,
+		"sessions_ended_count": endedCount,
 	})
+}
+
+func (h *ComputerHandler) endStationSession(id int, command, initiatedBy string) (bool, bool, error) {
+	tx, err := h.db.Beginx()
+	if err != nil {
+		return false, false, err
+	}
+	defer tx.Rollback()
+
+	var computer struct {
+		Name   string `db:"name"`
+		Status string `db:"status"`
+	}
+	if err := tx.Get(&computer, "SELECT name, status FROM computers WHERE id = ? AND is_active = 1 FOR UPDATE", id); err != nil {
+		return false, false, err
+	}
+	name := computer.Name
+	var activeBooking int
+	err = tx.Get(&activeBooking, "SELECT id FROM bookings WHERE computer_id = ? AND status = 'active' ORDER BY id DESC LIMIT 1 FOR UPDATE", id)
+	if err != nil && err != sql.ErrNoRows {
+		return false, false, err
+	}
+	authMode := "account"
+	if activeBooking != 0 {
+		authMode = "access_code"
+	}
+	agentCommand := command
+	if command == "LOGOUT" {
+		agentCommand = "LOCK"
+	}
+	delivered := h.hub.SendCommandToAgent(name, agentCommand, map[string]interface{}{
+		"reason": strings.ToLower(command), "auth_mode": authMode, "initiated_by": initiatedBy,
+	})
+	if !delivered {
+		h.hub.DisconnectAgent(name)
+		if activeBooking != 0 {
+			return false, false, nil
+		}
+	}
+
+	if activeBooking == 0 {
+		terminationReason := "forced_by_staff"
+		if command == "REBOOT" || command == "SHUTDOWN" {
+			terminationReason = "system_shutdown"
+		}
+		now := time.Now()
+		if _, err := tx.Exec(`UPDATE usage_logs SET end_time = ?, session_ends_at = NULL,
+			duration_minutes = GREATEST(1, TIMESTAMPDIFF(MINUTE, start_time, ?)),
+			termination_reason = ?
+			WHERE computer_id = ? AND booking_id IS NULL AND end_time IS NULL`, now, now, terminationReason, id); err != nil {
+			return false, false, err
+		}
+		if _, err := tx.Exec("UPDATE computers SET status = 'available' WHERE id = ? AND status = 'in_use'", id); err != nil {
+			return false, false, err
+		}
+	}
+
+	// Keep the hub update ordered with station login, which locks the same row.
+	h.hub.Mu.Lock()
+	if err := tx.Commit(); err != nil {
+		h.hub.Mu.Unlock()
+		h.hub.DisconnectAgent(name)
+		return false, false, err
+	}
+	if activeBooking == 0 {
+		if state := h.hub.Computers[name]; state != nil {
+			state.Status = releasedStationStatus(computer.Status)
+			state.CurrentBookingID = 0
+			state.CurrentUsageLogID = 0
+			state.CurrentUserID = nil
+			state.CurrentUserName = nil
+			state.SessionEndsAt = nil
+		}
+	}
+	h.hub.Mu.Unlock()
+	if activeBooking == 0 {
+		h.hub.BroadcastStateChange(name)
+	}
+	return delivered, activeBooking == 0, nil
+}
+
+func releasedStationStatus(status string) string {
+	if status == "in_use" {
+		return "available"
+	}
+	return status
 }
 
 func validAgentCommand(command string) bool {
 	switch command {
-	case "LOCK", "UNLOCK", "REBOOT", "SHUTDOWN", "MESSAGE", "NOTIFICATION":
+	case "LOCK", "LOGOUT", "UNLOCK", "REBOOT", "SHUTDOWN", "MESSAGE", "NOTIFICATION":
 		return true
 	default:
 		return false

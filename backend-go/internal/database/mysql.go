@@ -3,6 +3,7 @@ package database
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"database/sql"
 	"fmt"
 	"log"
 	"net"
@@ -28,6 +29,9 @@ func InitDB(cfg *config.Config) *sqlx.DB {
 	driverConfig.Params = map[string]string{"charset": "utf8mb4"}
 	driverConfig.ParseTime = true
 	driverConfig.Loc = time.Local
+	driverConfig.Timeout = 5 * time.Second
+	driverConfig.ReadTimeout = 15 * time.Second
+	driverConfig.WriteTimeout = 15 * time.Second
 
 	tlsConfig, useTLS, err := dbTLSConfig(cfg.DBHost, cfg.DBTLSCAFile)
 	if err != nil {
@@ -42,7 +46,11 @@ func InitDB(cfg *config.Config) *sqlx.DB {
 
 	db, err := sqlx.Connect("mysql", driverConfig.FormatDSN())
 	if err != nil {
-		log.Fatal("[Database] Failed to connect to MySQL")
+		detail := err.Error()
+		if cfg.DBPass != "" {
+			detail = strings.ReplaceAll(detail, cfg.DBPass, "[redacted]")
+		}
+		log.Fatalf("[Database] Failed to connect to MySQL: %s", detail)
 	}
 
 	// Production connection pool configuration
@@ -59,7 +67,9 @@ func InitDB(cfg *config.Config) *sqlx.DB {
 	DB = db
 
 	// Seed the initial Super Admin from configuration (never a hardcoded default)
-	ensureSuperAdmin(db, cfg)
+	if err := ensureSuperAdmin(db, cfg); err != nil {
+		log.Fatalf("[Database] Initial admin bootstrap failed: %s", err)
+	}
 
 	return db
 }
@@ -92,39 +102,67 @@ func dbTLSConfig(host, caFile string) (*tls.Config, bool, error) {
 	}, true, nil
 }
 
-func ensureSuperAdmin(db *sqlx.DB, cfg *config.Config) {
-	// If no super-admin credentials are configured, do not seed one. This avoids
-	// ever creating an account with a weak/default password.
-	if cfg.SAdminUsername == "" || cfg.SAdminPassword == "" {
-		log.Println("[Database] SADMIN_USERNAME/SADMIN_PASSWORD not set; skipping super admin seed.")
-		return
+func ensureSuperAdmin(db *sqlx.DB, cfg *config.Config) error {
+	if !cfg.BootstrapAdmin {
+		return nil
 	}
-	if len(cfg.SAdminPassword) < 12 || len(cfg.SAdminPassword) > 72 {
-		log.Printf("[Database] Super admin password must be 12-72 bytes; skipping initial seed.")
-		return
+	defer func() { cfg.SAdminPassword = "" }()
+	if err := config.ValidateBootstrapCredentials(cfg.SAdminUsername, cfg.SAdminPassword); err != nil {
+		return err
 	}
-
-	// Check if the super admin already exists; if so, leave it untouched.
-	var count int
-	_ = db.Get(&count, "SELECT COUNT(*) FROM users WHERE username = ?", cfg.SAdminUsername)
-	if count > 0 {
-		return
+	tx, err := db.Beginx()
+	if err != nil {
+		return fmt.Errorf("cannot start bootstrap transaction")
 	}
-
+	defer tx.Rollback()
+	// The unique settings key serializes bootstrap even under READ COMMITTED.
+	// Keep the marker after account deletion so restarting cannot recreate an admin.
+	if _, err := tx.Exec("INSERT INTO system_settings (setting_key, setting_value) VALUES ('admin_bootstrap_completed', 'false') ON DUPLICATE KEY UPDATE setting_key = setting_key"); err != nil {
+		return fmt.Errorf("cannot lock bootstrap marker")
+	}
+	var completed string
+	if err := tx.Get(&completed, "SELECT setting_value FROM system_settings WHERE setting_key = 'admin_bootstrap_completed' FOR UPDATE"); err != nil {
+		return fmt.Errorf("cannot read bootstrap marker")
+	}
+	if completed == "true" {
+		return nil
+	}
+	if completed != "false" {
+		return fmt.Errorf("invalid bootstrap marker")
+	}
+	var adminID int
+	err = tx.Get(&adminID, "SELECT id FROM users WHERE role = 'admin' ORDER BY id LIMIT 1 FOR UPDATE")
+	if err == nil {
+		if _, err := tx.Exec("UPDATE system_settings SET setting_value = 'true' WHERE setting_key = 'admin_bootstrap_completed'"); err != nil {
+			return fmt.Errorf("cannot complete bootstrap marker")
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("cannot commit bootstrap marker")
+		}
+		log.Println("[Database] An administrator already exists; bootstrap skipped. Remove bootstrap credentials from configuration.")
+		return nil
+	}
+	if err != sql.ErrNoRows {
+		return fmt.Errorf("cannot verify existing administrators")
+	}
 	hashed, err := bcrypt.GenerateFromPassword([]byte(cfg.SAdminPassword), bcrypt.DefaultCost)
 	if err != nil {
-		log.Printf("[Database] Failed to hash super admin password: %v", err)
-		return
+		return fmt.Errorf("cannot hash bootstrap password")
 	}
-
-	_, err = db.Exec(`
+	_, err = tx.Exec(`
 		INSERT INTO users (username, password_hash, full_name, role, department, user_type, is_active)
 		VALUES (?, ?, 'Super Administrator', 'admin', 'System Control', 'staff', 1)`,
 		cfg.SAdminUsername, string(hashed),
 	)
 	if err != nil {
-		log.Printf("[Database] Failed to seed super admin: %v", err)
-		return
+		return fmt.Errorf("cannot insert initial administrator")
 	}
-	log.Printf("[Database] Initial Super Admin %q created from configuration.", cfg.SAdminUsername)
+	if _, err := tx.Exec("UPDATE system_settings SET setting_value = 'true' WHERE setting_key = 'admin_bootstrap_completed'"); err != nil {
+		return fmt.Errorf("cannot complete bootstrap marker")
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("cannot commit initial administrator")
+	}
+	log.Println("[Database] Initial administrator created. Disable BOOTSTRAP_ADMIN and remove SADMIN credentials before exposing the service.")
+	return nil
 }

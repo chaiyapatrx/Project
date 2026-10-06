@@ -1,6 +1,7 @@
 # migrations/apply_migrations.py
 import ipaddress
 import os
+import re
 import ssl
 import sys
 import pymysql
@@ -80,18 +81,43 @@ def run_sql_file(cursor, file_path: str):
         cursor.execute(stmt)
 
 
+def parse_env_value(value: str, values: dict) -> str:
+    """Match the backend's usual godotenv quoting, escapes and interpolation."""
+    if value.startswith("'"):
+        match = re.fullmatch(r"'([^']*)'\s*(?:#.*)?", value)
+        if match is None:
+            raise ValueError("Invalid single-quoted .env value")
+        return match[1]
+    if value.startswith('"'):
+        match = re.fullmatch(r'"((?:\\.|[^"\\])*)"\s*(?:#.*)?', value)
+        if match is None:
+            raise ValueError("Invalid double-quoted .env value")
+        value = re.sub(r"\\.", lambda m: {r"\n": "\n", r"\r": "\r"}.get(m[0], m[0]), match[1])
+        value = re.sub(r"\\([^$])", r"\1", value)
+    else:
+        value = re.sub(r"\s+#.*$", "", value).strip()
+
+    def expand(match):
+        if match[1]:
+            return match[0][1:]
+        return values.get(match[4], "") if match[4] else match[0]
+
+    return re.sub(r"(\\)?(\$)(\()?\{?([A-Z0-9_]+)?\}?", expand, value)
+
+
 def load_database_config() -> dict:
     env_path = os.path.join(os.path.dirname(__file__), "..", ".env")
     if os.path.exists(env_path):
+        values = {}
         with open(env_path, "r", encoding="utf-8-sig") as env_file:
             for line in env_file:
                 line = line.strip()
                 if line and not line.startswith("#") and "=" in line:
                     key, value = line.split("=", 1)
-                    value = value.strip()
-                    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
-                        value = value[1:-1]
-                    os.environ.setdefault(key.strip(), value)
+                    key = key.removeprefix("export ").strip()
+                    values[key] = parse_env_value(value.strip(), values)
+        for key, value in values.items():
+            os.environ.setdefault(key, value)
 
     required = ("DB_HOST", "DB_USER", "DB_PASS", "DB_NAME")
     missing = [key for key in required if not os.getenv(key)]
@@ -183,6 +209,17 @@ def apply_migrations(cursor, connection):
                     "ALTER TABLE `usage_logs` ADD INDEX `idx_usage_active_sessions` "
                     "(`computer_id`, `end_time`, `session_ends_at`)"
                 )
+        elif version == "000006":
+            if not column_exists(cursor, "computers", "pending_approval"):
+                cursor.execute(
+                    "ALTER TABLE `computers` ADD COLUMN `pending_approval` "
+                    "BOOLEAN NOT NULL DEFAULT FALSE AFTER `is_active`"
+                )
+            if not index_exists(cursor, "computers", "idx_computers_pending_approval"):
+                cursor.execute(
+                    "ALTER TABLE `computers` ADD INDEX `idx_computers_pending_approval` "
+                    "(`pending_approval`)"
+                )
         elif version == "000007":
             # MySQL commits DDL separately. A retry must resume after any
             # column/table already created before the ledger insert.
@@ -212,9 +249,10 @@ def main():
     try:
         conn = pymysql.connect(**db_config, autocommit=False)
         with conn.cursor() as cursor:
-            init_file = os.path.join(os.path.dirname(__file__), "init_database.sql")
-            run_sql_file(cursor, init_file)
-            conn.commit()
+            # Connection-scoped lock prevents two deployments applying the same DDL.
+            cursor.execute("SELECT GET_LOCK('aucc_schema_migrations', 30)")
+            if cursor.fetchone() != (1,):
+                raise RuntimeError("Cannot acquire migration lock")
             apply_migrations(cursor, conn)
         print("[+] Migration complete.")
     except Exception as e:

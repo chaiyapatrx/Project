@@ -133,7 +133,7 @@ func (h *WSHandler) AgentWS(c *gin.Context) {
 		log.Printf("[WS] Failed to lock agent computer %s: %v", computerName, err)
 		return
 	}
-	if !current.HWID.Valid || current.HWID.String != hwid ||
+	if current.Status == "disabled" || !current.HWID.Valid || current.HWID.String != hwid ||
 		(current.AgentSecretHash.Valid && !auth.VerifyAgentSecret(secret, current.AgentSecretHash.String)) ||
 		(!current.AgentSecretHash.Valid && (!h.cfg.AllowLegacyAgents || h.cfg.AgentSecret == "" || subtle.ConstantTimeCompare([]byte(secret), []byte(h.cfg.AgentSecret)) != 1)) {
 		log.Printf("[WS] Agent credentials changed during connection for %s", computerName)
@@ -212,6 +212,14 @@ func (h *WSHandler) AgentWS(c *gin.Context) {
 	}
 	h.hub.RegisterAgent(computerName, hwid, ip, comp.ID, commandSecret, conn)
 	defer h.hub.UnregisterAgent(computerName, conn)
+	h.hub.Mu.Lock()
+	if state := h.hub.Computers[computerName]; state != nil {
+		state.Status = hubStatus
+		if hasActiveBooking || hasActiveUsage {
+			state.Status = "in_use"
+		}
+	}
+	h.hub.Mu.Unlock()
 	if hasActiveUsage {
 		end := restoredWalkInSessionEnd(usage.SessionEndsAt)
 		h.hub.Mu.Lock()
@@ -438,7 +446,11 @@ func (h *WSHandler) MonitorWS(c *gin.Context) {
 		return
 	}
 
-	conn, err := h.upgrader.Upgrade(c.Writer, c.Request, nil)
+	var responseHeader http.Header
+	if sub := c.GetHeader("Sec-WebSocket-Protocol"); sub != "" {
+		responseHeader = http.Header{"Sec-WebSocket-Protocol": []string{sub}}
+	}
+	conn, err := h.upgrader.Upgrade(c.Writer, c.Request, responseHeader)
 	if err != nil {
 		log.Printf("[WS] Failed to upgrade web client: %v", err)
 		return
@@ -462,8 +474,13 @@ func (h *WSHandler) MonitorWS(c *gin.Context) {
 	go func() {
 		ticker := time.NewTicker(25 * time.Second)
 		defer ticker.Stop()
+		expires := time.NewTimer(time.Until(claims.ExpiresAt.Time))
+		defer expires.Stop()
 		for {
 			select {
+			case <-expires.C:
+				_ = conn.Close()
+				return
 			case <-ticker.C:
 				var active bool
 				var version int

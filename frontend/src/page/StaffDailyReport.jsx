@@ -6,7 +6,7 @@ function StaffDailyReport() {
     const { user } = useAuth();
     const [stats, setStats] = useState({
         total_users: 0,
-        peak_hours: "11:00 - 14:00",
+        active_computers: 0,
         avg_session: 0
     });
     const [recentLogs, setRecentLogs] = useState([]);
@@ -17,21 +17,21 @@ function StaffDailyReport() {
             try {
                 const [statsRes, logsRes] = await Promise.all([
                     apiFetch("/dashboard/stats", { user }),
-                    apiFetch("/admin/usage-history", { user })
+                    apiFetch("/admin/usage-history?period=day", { user })
                 ]);
 
                 if (statsRes.ok) {
                     const data = await statsRes.json();
                     setStats({
-                        total_users: data.total_users || data.unique_users || 0,
+                        total_users: data.total_users || 0,
                         avg_session: data.avg_duration_min || 0,
-                        peak_hours: data.active_computers > 0 ? "Currently Active" : "No Peak Activity"
+                        active_computers: data.active_computers || 0
                     });
                 }
 
                 if (logsRes.ok) {
                     const logs = await logsRes.json();
-                    setRecentLogs(Array.isArray(logs) ? logs.slice(0, 10) : []);
+                    setRecentLogs(Array.isArray(logs) ? logs.filter(log => log.end_time).slice(0, 10) : []);
                 }
             } catch (error) {
                 console.error("Error fetching report data:", error);
@@ -54,15 +54,15 @@ function StaffDailyReport() {
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
                     <div className="flex items-center gap-4">
                         <div className="p-3 bg-[#7c3aed]/10 rounded-xl text-[#7c3aed]"><span className="material-symbols-outlined">groups</span></div>
-                        <div><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Total Users</p><h3 className="text-2xl font-black text-slate-800 tracking-tight">{stats.total_users}</h3></div>
+                        <div><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Registered Users</p><h3 className="text-2xl font-black text-slate-800 tracking-tight">{stats.total_users}</h3></div>
                     </div>
                     <div className="flex items-center gap-4 border-l border-slate-100 pl-8">
                         <div className="p-3 bg-amber-50 rounded-xl text-amber-500"><span className="material-symbols-outlined">bolt</span></div>
-                        <div><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Peak Hours (Est.)</p><h3 className="text-2xl font-black text-slate-800 tracking-tight">{stats.peak_hours}</h3></div>
+                        <div><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Stations In Use</p><h3 className="text-2xl font-black text-slate-800 tracking-tight">{stats.active_computers}</h3></div>
                     </div>
                     <div className="flex items-center gap-4 border-l border-slate-100 pl-8">
                         <div className="p-3 bg-emerald-50 rounded-xl text-emerald-500"><span className="material-symbols-outlined">avg_pace</span></div>
-                        <div><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Avg. Session Time</p><h3 className="text-2xl font-black text-slate-800 tracking-tight">{stats.avg_session} <span className="text-sm font-normal text-slate-400">mins</span></h3></div>
+                        <div><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Historical Avg. Session</p><h3 className="text-2xl font-black text-slate-800 tracking-tight">{stats.avg_session} <span className="text-sm font-normal text-slate-400">mins</span></h3></div>
                     </div>
                 </div>
             </div>
@@ -70,7 +70,7 @@ function StaffDailyReport() {
             {/* Recent Completed Sessions Log */}
             <div className="glass-card rounded-2xl p-6 shadow-sm">
                 <div className="flex items-center justify-between mb-6">
-                    <h3 className="font-bold text-slate-800">Recent Completed Sessions</h3>
+                    <h3 className="font-bold text-slate-800">Recent Completed Sessions Today</h3>
                 </div>
 
                 <table className="w-full text-left border-collapse">

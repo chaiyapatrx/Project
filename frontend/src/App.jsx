@@ -43,7 +43,7 @@ export const AuthProvider = ({ children }) => {
           if (active) setUser(refreshedUser);
           localStorage.setItem('user_data', JSON.stringify(refreshedUser));
         } catch {
-          if (active) setUser(parsed);
+          localStorage.removeItem('user_data');
         }
       } catch {
         try { localStorage.removeItem('user_data'); } catch { /* Storage may be unavailable. */ }
@@ -55,19 +55,28 @@ export const AuthProvider = ({ children }) => {
     return () => { active = false; };
   }, []);
 
+  useEffect(() => {
+    const expireSession = () => {
+      setUser(null);
+      try { localStorage.removeItem('user_data'); } catch { /* Storage may be unavailable. */ }
+      navigate('/login', { replace: true });
+    };
+    const syncSession = event => {
+      if (event.key === 'user_data' || event.key === null) window.location.reload();
+    };
+    window.addEventListener('aucc:session-expired', expireSession);
+    window.addEventListener('storage', syncSession);
+    return () => {
+      window.removeEventListener('aucc:session-expired', expireSession);
+      window.removeEventListener('storage', syncSession);
+    };
+  }, [navigate]);
+
   const login = (userData) => {
     setUser(userData);
-    localStorage.setItem('user_data', JSON.stringify(userData));
+    try { localStorage.setItem('user_data', JSON.stringify(userData)); } catch { /* Storage may be unavailable. */ }
 
-    // ✅ CHECK FOR ELECTRON KIOSK MODE
-    if (window.electronAPI && window.electronAPI.unlock) {
-      // Unlock Station (Minimize App)
-      console.log("Kiosk Login Success -> Unlocking Station");
-      window.electronAPI.unlock();
-      return;
-    }
-
-    // ✅ 2. ปรับ Logic Redirect ตาม Role (Web Mode)
+    // Redirect to the authenticated user's dashboard.
     if (userData.role === 'admin') {
       navigate('/admin');
     } else if (userData.role === 'staff') { // เพิ่มเงื่อนไข Staff
@@ -81,9 +90,12 @@ export const AuthProvider = ({ children }) => {
 
   const logout = async () => {
     // Clear the server-side HttpOnly session cookie first, then local state.
-    await logoutRequest(user);
+    if (!await logoutRequest(user)) {
+      window.alert('Unable to sign out on the server. Check the connection and try again.');
+      return;
+    }
     setUser(null);
-    localStorage.removeItem('user_data');
+    try { localStorage.removeItem('user_data'); } catch { /* Storage may be unavailable. */ }
     navigate('/login');
   };
 
@@ -354,16 +366,6 @@ function App() {
     <HashRouter>
       <AuthProvider>
         <Routes>
-          {/* KIOSK MODE ENFORCEMENT */}
-          {window.electronAPI ? (
-            /* In Electron, FORCE Login Page ONLY. No other routes accessible. */
-            <>
-              <Route path="/" element={<Login />} />
-              <Route path="*" element={<Navigate to="/" replace />} />
-            </>
-          ) : (
-            /* Normal Web Routing */
-            <>
               <Route path="/" element={<GuestRoute><PublicHome /></GuestRoute>} />
               <Route path="/login" element={<GuestRoute><Login /></GuestRoute>} />
 
@@ -396,8 +398,6 @@ function App() {
               } />
 
               <Route path="*" element={<Navigate to="/" replace />} />
-            </>
-          )}
         </Routes>
       </AuthProvider>
     </HashRouter>

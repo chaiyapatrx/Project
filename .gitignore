@@ -29,6 +29,9 @@ agent_config.json
 *.bak
 *.tmp
 *.old
+/backups/
+/backend-go/server.out.log
+/backend-go/server.err.log
 *~
 
 # Local editor settings

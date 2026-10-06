@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../App';
 import { apiFetch } from '../api';
+import { useMonitorWebSocket } from '../useMonitorWebSocket';
 import AgentUpdates from './AgentUpdates';
 const Toast = ({ message, type, onClose }) => {
     useEffect(() => { const timer = setTimeout(onClose, 3000); return () => clearTimeout(timer); }, [onClose]);
@@ -58,8 +59,52 @@ function AdminComputerManagement() {
         }
     }, [user]);
 
+    const handleStatusChanged = useCallback((updatedStation) => {
+        setComputers(prev => prev.map(c => {
+            if (c.id === updatedStation.id || c.name === updatedStation.name) {
+                return {
+                    ...c,
+                    status: updatedStation.status,
+                    is_online: updatedStation.is_online,
+                    current_user_name: updatedStation.current_user_name,
+                    session_ends_at: updatedStation.session_ends_at
+                };
+            }
+            return c;
+        }));
+    }, []);
+
+    const handleSnapshot = useCallback((snapshot) => {
+        if (!Array.isArray(snapshot) || snapshot.length === 0) return;
+        setComputers(prev => {
+            const map = new Map(snapshot.map(s => [s.name, s]));
+            return prev.map(c => {
+                const live = map.get(c.name);
+                if (live) {
+                    return {
+                        ...c,
+                        status: live.status,
+                        is_online: live.is_online,
+                        current_user_name: live.current_user_name,
+                        session_ends_at: live.session_ends_at
+                    };
+                }
+                return c;
+            });
+        });
+    }, []);
+
+    useMonitorWebSocket({
+        user,
+        onStatusChanged: handleStatusChanged,
+        onSnapshot: handleSnapshot
+    });
+
     useEffect(() => {
-        if (user) fetchComputers();
+        if (!user) return;
+        fetchComputers();
+        const timer = setInterval(fetchComputers, 5000);
+        return () => clearInterval(timer);
     }, [user, fetchComputers]);
 
     useEffect(() => {
@@ -77,6 +122,20 @@ function AdminComputerManagement() {
             }
             setToast({ type: 'success', message: `${agent.name} approved; agent will connect automatically.` });
             await Promise.all([fetchPendingAgents(), fetchComputers()]);
+        } catch (error) {
+            setToast({ type: 'error', message: error.message });
+        }
+    };
+
+    const rejectAgent = async (agent) => {
+        try {
+            const response = await apiFetch(`/api/admin/computers/pending/${agent.id}`, { method: 'DELETE', user });
+            if (!response.ok) {
+                const data = await response.json().catch(() => ({}));
+                throw new Error(data.error || 'Could not reject station');
+            }
+            setToast({ type: 'success', message: `${agent.name} enrollment rejected.` });
+            await fetchPendingAgents();
         } catch (error) {
             setToast({ type: 'error', message: error.message });
         }
@@ -146,14 +205,16 @@ function AdminComputerManagement() {
                         method: "POST",
                         user,
                         headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ command: ({ logout: 'LOCK', restart: 'REBOOT', shutdown: 'SHUTDOWN' })[action.toLowerCase()] })
+                    body: JSON.stringify({ command: ({ logout: 'LOGOUT', restart: 'REBOOT', shutdown: 'SHUTDOWN' })[action.toLowerCase()] })
                     });
 
                     if (response.ok) {
                         const data = await response.json();
                         const deliveredCount = Number(data.delivered_count) || 0;
-                        setToast(deliveredCount > 0
-                            ? { type: 'success', message: `Batch ${action} sent to ${deliveredCount} active stations.` }
+                        const endedCount = Number(data.sessions_ended_count) || 0;
+                        if (action.toLowerCase() === 'logout') await fetchComputers();
+                        setToast(deliveredCount > 0 || endedCount > 0
+                            ? { type: 'success', message: action.toLowerCase() === 'logout' ? `Ended ${endedCount} station sessions; ${deliveredCount} agents received the lock.` : `Batch ${action} sent to ${deliveredCount} active stations.` }
                             : { type: 'error', message: `No active stations received the ${action} command.` });
                     } else {
                         const err = await response.json().catch(() => ({}));
@@ -177,7 +238,7 @@ function AdminComputerManagement() {
                     const cmdMap = {
                         'restart': 'REBOOT',
                         'shutdown': 'SHUTDOWN',
-                        'logout': 'LOCK',
+                        'logout': 'LOGOUT',
                         'lock': 'LOCK',
                         'unlock': 'UNLOCK',
                         'reboot': 'REBOOT'
@@ -192,10 +253,11 @@ function AdminComputerManagement() {
                     });
 
                     const data = await response.json().catch(() => ({}));
-                    if (!response.ok || data.delivered === false) {
+                    if (!response.ok || (data.delivered === false && !data.session_ended)) {
                         setToast({ type: 'error', message: data.error || data.detail || data.message || `Command ${action} was not delivered.` });
                     } else {
                         setToast({ type: 'success', message: `Command ${action} sent successfully.` });
+                        if (action.toLowerCase() === 'logout') await fetchComputers();
                     }
                 } catch (error) {
                     console.error("Error sending command:", error);
@@ -439,7 +501,10 @@ function AdminComputerManagement() {
                         {!pendingError && pendingAgents.length === 0 ? <p className="text-sm text-slate-400">No pending stations</p> : pendingAgents.map(agent => (
                             <div key={agent.id} className="flex items-center justify-between gap-3 border-t py-3">
                                 <div><strong>{agent.name}</strong><p className="text-xs text-slate-500 font-mono">{agent.hwid}</p></div>
-                                <button onClick={() => approveAgent(agent)} className="px-3 py-2 rounded-lg bg-violet-600 text-white text-sm font-bold hover:bg-violet-700">Approve</button>
+                                <div className="flex items-center gap-2">
+                                    <button onClick={() => rejectAgent(agent)} className="px-3 py-2 rounded-lg border border-rose-200 text-rose-600 text-sm font-bold hover:bg-rose-50 transition-colors">Reject</button>
+                                    <button onClick={() => approveAgent(agent)} className="px-3 py-2 rounded-lg bg-violet-600 text-white text-sm font-bold hover:bg-violet-700 transition-colors">Approve</button>
+                                </div>
                             </div>
                         ))}
                     </section>

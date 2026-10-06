@@ -171,7 +171,9 @@ func (w *SessionWorker) expireWalkInSession(expired expiredSession, now time.Tim
 
 	w.hub.Mu.Lock()
 	if state := w.hub.Computers[expired.compName]; state != nil && state.CurrentUsageLogID == expired.usageLogID {
-		state.Status = "available"
+		if state.Status == "in_use" {
+			state.Status = "available"
+		}
 		state.CurrentBookingID = 0
 		state.CurrentUsageLogID = 0
 		state.CurrentUserID = nil
@@ -204,7 +206,9 @@ func (w *SessionWorker) expireSession(expired expiredSession, now time.Time) {
 	err = tx.Get(&booking, "SELECT id, user_id, start_time, end_time FROM bookings WHERE id = ? AND computer_id = ? AND status = 'active' FOR UPDATE", expired.bookingID, computerID)
 	if err == sql.ErrNoRows {
 		var activeBookings int
-		if err := tx.Get(&activeBookings, "SELECT COUNT(*) FROM bookings WHERE computer_id = ? AND status = 'active'", computerID); err != nil {
+		if err := tx.Get(&activeBookings, `SELECT
+			(SELECT COUNT(*) FROM bookings WHERE computer_id = ? AND status IN ('pending', 'active')) +
+			(SELECT COUNT(*) FROM usage_logs WHERE computer_id = ? AND booking_id IS NULL AND end_time IS NULL)`, computerID, computerID); err != nil {
 			log.Printf("[Worker] Failed to check current booking for %s: %v", expired.compName, err)
 			return
 		}
@@ -277,7 +281,9 @@ func (w *SessionWorker) expireSession(expired expiredSession, now time.Time) {
 
 	w.hub.Mu.Lock()
 	if state := w.hub.Computers[expired.compName]; state != nil && hub.MatchesBookingID(state.CurrentBookingID, expired.bookingID) {
-		state.Status = "available"
+		if state.Status == "in_use" {
+			state.Status = "available"
+		}
 		state.CurrentBookingID = 0
 		state.CurrentUsageLogID = 0
 		state.CurrentUserID = nil

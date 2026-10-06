@@ -17,6 +17,7 @@ func TestClassifyBookingCommitRecovery(t *testing.T) {
 		{name: "persisted booking", bookingStatus: "active", computerStatus: "in_use", activeBookings: 1, want: bookingCommitPersisted},
 		{name: "no active booking", bookingStatus: "cancelled", computerStatus: "available", want: bookingCommitNoActive},
 		{name: "newer active booking", bookingStatus: "cancelled", computerStatus: "in_use", activeBookings: 1, want: bookingCommitOtherActive},
+		{name: "replacement walk-in", bookingStatus: "", computerStatus: "in_use", activeBookings: 1, want: bookingCommitOtherActive},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

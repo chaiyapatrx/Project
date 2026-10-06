@@ -5,11 +5,13 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
 	"station-backend/internal/auth"
 	"station-backend/internal/config"
+	"station-backend/internal/middleware"
 	"station-backend/internal/models"
 )
 
@@ -29,7 +31,7 @@ type LoginRequest struct {
 
 type RegisterRequest struct {
 	Username string `json:"username" binding:"required,min=3,max=50"`
-	Password string `json:"password" binding:"required,min=8,max=128"`
+	Password string `json:"password" binding:"required,min=15,max=128"`
 	FullName string `json:"full_name" binding:"required,max=100"`
 	// Role is intentionally omitted: public self-registration always creates a
 	// student account (enforced server-side). Never trust a client-supplied role.
@@ -38,7 +40,7 @@ type RegisterRequest struct {
 }
 
 func passwordLengthValid(password string) bool {
-	return len(password) >= 8 && len(password) <= 72
+	return utf8.RuneCountInString(password) >= 15 && len(password) <= 72
 }
 
 func (h *AuthHandler) Login(c *gin.Context) {
@@ -53,7 +55,8 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		}
 	}
 
-	if username == "" || password == "" {
+	username = strings.TrimSpace(username)
+	if username == "" || utf8.RuneCountInString(username) > 50 || password == "" || len(password) > 72 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Username and password required"})
 		return
 	}
@@ -61,10 +64,16 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	var user models.User
 	err := h.db.Get(&user, "SELECT * FROM users WHERE username = ? AND is_active = 1", username)
 	if err == sql.ErrNoRows {
+		// Match the bcrypt cost for an existing account without revealing whether
+		// the submitted username exists through a fast rejection.
+		_ = auth.CheckPasswordHash(password, auth.DummyPasswordHash)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Incorrect username or password"})
 		return
 	} else if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
+		return
+	}
+	if !middleware.AccountLoginAllowed(c, user.ID) {
 		return
 	}
 
@@ -134,12 +143,12 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		return
 	}
 	if !passwordLengthValid(req.Password) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Password must be between 8 and 72 bytes"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Password must be at least 15 characters and at most 72 bytes"})
 		return
 	}
 	req.Username = strings.TrimSpace(req.Username)
 	req.FullName = strings.TrimSpace(req.FullName)
-	if req.Username == "" || req.FullName == "" {
+	if utf8.RuneCountInString(req.Username) < 3 || req.FullName == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Username and full name are required"})
 		return
 	}
@@ -185,7 +194,7 @@ func (h *AuthHandler) Register(c *gin.Context) {
 
 type AdminCreateUserRequest struct {
 	Username   string  `json:"username" binding:"required,min=3,max=50"`
-	Password   string  `json:"password" binding:"required,min=8,max=128"`
+	Password   string  `json:"password" binding:"required,min=15,max=128"`
 	FullName   string  `json:"full_name" binding:"required,max=100"`
 	Role       string  `json:"role" binding:"required"` // admin, staff, executive, student
 	Department *string `json:"department" binding:"omitempty,max=100"`
@@ -199,12 +208,12 @@ func (h *AuthHandler) AdminCreateUser(c *gin.Context) {
 		return
 	}
 	if !passwordLengthValid(req.Password) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Password must be between 8 and 72 bytes"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Password must be at least 15 characters and at most 72 bytes"})
 		return
 	}
 	req.Username = strings.TrimSpace(req.Username)
 	req.FullName = strings.TrimSpace(req.FullName)
-	if req.Username == "" || req.FullName == "" {
+	if utf8.RuneCountInString(req.Username) < 3 || req.FullName == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Username and full name are required"})
 		return
 	}
@@ -360,7 +369,7 @@ func (h *AuthHandler) ResetUserPassword(c *gin.Context) {
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil || !passwordLengthValid(req.NewPassword) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Password must be between 8 and 72 bytes"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Password must be at least 15 characters and at most 72 bytes"})
 		return
 	}
 
@@ -394,7 +403,7 @@ func (h *AuthHandler) ChangePassword(c *gin.Context) {
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil || !passwordLengthValid(req.NewPassword) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "New password must be between 8 and 72 bytes"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "New password must be at least 15 characters and at most 72 bytes"})
 		return
 	}
 
@@ -402,6 +411,13 @@ func (h *AuthHandler) ChangePassword(c *gin.Context) {
 	err := h.db.Get(&user, "SELECT * FROM users WHERE id = ? AND is_active = 1", currentUserID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+	if !middleware.AccountLoginAllowed(c, user.ID) {
+		return
+	}
+	if user.TokenVersion != c.GetInt("token_version") {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Session was revoked; sign in again"})
 		return
 	}
 	if !auth.CheckPasswordHash(req.OldPassword, user.PasswordHash) {
@@ -415,9 +431,22 @@ func (h *AuthHandler) ChangePassword(c *gin.Context) {
 		return
 	}
 
-	_, err = h.db.Exec("UPDATE users SET password_hash = ?, token_version = token_version + 1 WHERE id = ?", hashed, currentUserID)
+	// A password reset, logout, role change, or deactivation after verification
+	// invalidates this request. Never overwrite a newer security decision.
+	result, err := h.db.Exec(`UPDATE users SET password_hash = ?, token_version = token_version + 1
+		WHERE id = ? AND is_active = 1 AND password_hash = ? AND token_version = ?`,
+		hashed, currentUserID, user.PasswordHash, user.TokenVersion)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update password"})
+		return
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to verify password update"})
+		return
+	}
+	if changed != 1 {
+		c.JSON(http.StatusConflict, gin.H{"error": "Account changed during password update; sign in again"})
 		return
 	}
 	recordAudit(c, h.db, "password_changed", "user", strconv.Itoa(currentUserID), "Password changed; sessions revoked")

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../App';
 import { apiFetch } from '../api';
+import { useMonitorWebSocket } from '../useMonitorWebSocket';
 import AgentUpdates from './AgentUpdates';
 
 const Toast = ({ message, type, onClose }) => {
@@ -36,10 +37,51 @@ function StaffStationManagement() {
         }
     }, [user]);
 
+    const handleStatusChanged = useCallback((updatedStation) => {
+        setStations(prev => prev.map(s => {
+            if (s.id === updatedStation.id || s.name === updatedStation.name) {
+                return {
+                    ...s,
+                    status: updatedStation.status,
+                    is_online: updatedStation.is_online,
+                    current_user_name: updatedStation.current_user_name,
+                    session_ends_at: updatedStation.session_ends_at
+                };
+            }
+            return s;
+        }));
+    }, []);
+
+    const handleSnapshot = useCallback((snapshot) => {
+        if (!Array.isArray(snapshot) || snapshot.length === 0) return;
+        setStations(prev => {
+            const map = new Map(snapshot.map(s => [s.name, s]));
+            return prev.map(s => {
+                const live = map.get(s.name);
+                if (live) {
+                    return {
+                        ...s,
+                        status: live.status,
+                        is_online: live.is_online,
+                        current_user_name: live.current_user_name,
+                        session_ends_at: live.session_ends_at
+                    };
+                }
+                return s;
+            });
+        });
+    }, []);
+
+    useMonitorWebSocket({
+        user,
+        onStatusChanged: handleStatusChanged,
+        onSnapshot: handleSnapshot
+    });
+
     useEffect(() => {
         if (user) {
             fetchStations();
-            // Optional: Auto-refresh every 5 seconds
+            // Fallback refresh every 5 seconds
             const interval = setInterval(fetchStations, 5000);
             return () => clearInterval(interval);
         }
@@ -56,7 +98,7 @@ function StaffStationManagement() {
                     const cmdMap = {
                         'restart': 'REBOOT',
                         'shutdown': 'SHUTDOWN',
-                        'logout': 'LOCK',
+                        'logout': 'LOGOUT',
                         'lock': 'LOCK',
                         'unlock': 'UNLOCK',
                         'reboot': 'REBOOT'
@@ -71,10 +113,11 @@ function StaffStationManagement() {
                     });
 
                     const data = await response.json().catch(() => ({}));
-                    if (!response.ok || data.delivered === false) {
+                    if (!response.ok || (data.delivered === false && !data.session_ended)) {
                         setToast({ type: 'error', message: data.error || data.detail || data.message || `Command ${action} was not delivered.` });
                     } else {
                         setToast({ type: 'success', message: `Command ${action} sent successfully.` });
+                        if (action.toLowerCase() === 'logout') await fetchStations();
                     }
                 } catch (error) {
                     console.error("Error sending command:", error);

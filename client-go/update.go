@@ -29,6 +29,11 @@ func checkForAgentUpdate(ctx context.Context, cfg *Config, hwid string) (bool, e
 	if err != nil {
 		return false, err
 	}
+	// A local user can impersonate a stopped plaintext localhost server. Never
+	// execute downloaded code without authenticating the publishing server.
+	if !strings.HasPrefix(endpoint, "https://") {
+		return false, fmt.Errorf("automatic Agent updates require a trusted wss:// server, including localhost")
+	}
 	requestCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, endpoint, nil)
@@ -36,7 +41,10 @@ func checkForAgentUpdate(ctx context.Context, cfg *Config, hwid string) (bool, e
 		return false, err
 	}
 	setAgentUpdateHeaders(request, cfg, hwid)
-	client := &http.Client{Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	client, err := agentHTTPClient(cfg, 10*time.Second)
+	if err != nil {
+		return false, err
+	}
 	response, err := client.Do(request)
 	if err != nil {
 		return false, err
@@ -95,6 +103,9 @@ func downloadAndStartUpdate(ctx context.Context, client *http.Client, cfg *Confi
 		return false, err
 	}
 	installDir := filepath.Dir(executable)
+	if !strings.EqualFold(filepath.Base(executable), "AUCCAgent.exe") {
+		return false, fmt.Errorf("automatic updates require the installed AUCCAgent.exe; rebuild with build_agent.bat or install the setup package")
+	}
 	helper := filepath.Join(installDir, "AUCCUpdater.exe")
 	if _, err := os.Stat(helper); err != nil {
 		return false, fmt.Errorf("AUCCUpdater.exe missing; install the bootstrap version once")

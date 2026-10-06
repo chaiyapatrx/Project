@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../App';
 import { apiFetch } from '../api';
+import { useMonitorWebSocket } from '../useMonitorWebSocket';
 
 const Toast = ({ message, type, onClose }) => {
     useEffect(() => { const timer = setTimeout(onClose, 3000); return () => clearTimeout(timer); }, [onClose]);
@@ -35,6 +36,13 @@ function StaffSessionControl() {
             setLoading(false);
         }
     }, [user]);
+
+    useMonitorWebSocket({
+        user,
+        onStatusChanged: () => {
+            fetchBookings();
+        }
+    });
 
     useEffect(() => {
         if (user) {
@@ -171,8 +179,10 @@ function StaffSessionControl() {
                     if (response.ok) {
                         const data = await response.json();
                         const deliveredCount = Number(data.delivered_count) || 0;
-                        setToast(deliveredCount > 0
-                            ? { type: 'success', message: `Global ${action} command sent to ${deliveredCount} machines.` }
+                        const endedCount = Number(data.sessions_ended_count) || 0;
+                        if (action.toLowerCase() === 'logout') await fetchBookings();
+                        setToast(deliveredCount > 0 || endedCount > 0
+                            ? { type: 'success', message: action.toLowerCase() === 'logout' ? `Ended ${endedCount} station sessions; ${deliveredCount} agents received the lock.` : `Global ${action} command sent to ${deliveredCount} machines.` }
                             : { type: 'error', message: `No online machines received the ${action} command.` });
                     } else {
                         const err = await response.json().catch(() => ({}));

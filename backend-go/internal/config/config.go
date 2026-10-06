@@ -1,11 +1,13 @@
 package config
 
 import (
+	"fmt"
 	"log"
 	"net"
 	"os"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/joho/godotenv"
 )
@@ -25,10 +27,12 @@ type Config struct {
 	JWTExpiresIn            int
 	AgentSecret             string
 	AgentReleaseDir         string
+	FrontendDistDir         string
 	AllowedOrigins          []string
 	TrustedProxies          []string
 	SAdminUsername          string
 	SAdminPassword          string
+	BootstrapAdmin          bool
 	AllowLegacyAgents       bool
 	SelfRegistrationEnabled bool
 	CookieSecure            bool
@@ -65,8 +69,17 @@ func LoadConfig() *Config {
 	if err != nil || exp <= 0 {
 		log.Fatal("[Config] JWT_EXPIRATION_MINUTES must be a positive integer")
 	}
-	cookieSecure := strings.EqualFold(getEnv("COOKIE_SECURE", "true"), "true")
+	cookieSecure, err := strconv.ParseBool(getEnv("COOKIE_SECURE", "true"))
+	if err != nil {
+		log.Fatal("[Config] COOKIE_SECURE must be true or false")
+	}
 	cookieSameSite := strings.ToLower(getEnv("COOKIE_SAMESITE", "lax"))
+	if cookieSameSite != "lax" && cookieSameSite != "strict" && cookieSameSite != "none" {
+		log.Fatal("[Config] COOKIE_SAMESITE must be lax, strict or none")
+	}
+	if tlsCert != "" && !cookieSecure {
+		log.Fatal("[Config] HTTPS requires COOKIE_SECURE=true")
+	}
 	if cookieSameSite == "none" && !cookieSecure {
 		log.Fatal("[Config] COOKIE_SAMESITE=none requires COOKIE_SECURE=true")
 	}
@@ -75,8 +88,11 @@ func LoadConfig() *Config {
 	if len(jwtSecret) < 32 {
 		log.Fatal("[Config] JWT_SECRET must contain at least 32 bytes")
 	}
+	if exampleSecret(jwtSecret) {
+		log.Fatal("[Config] JWT_SECRET must not be a documented example or repeated character")
+	}
 	agentSecret := getEnv("AGENT_SECRET", "")
-	allowLegacyAgents, err := strconv.ParseBool(getEnv("ALLOW_LEGACY_AGENTS", strconv.FormatBool(agentSecret != "")))
+	allowLegacyAgents, err := strconv.ParseBool(getEnv("ALLOW_LEGACY_AGENTS", "false"))
 	if err != nil {
 		log.Fatal("[Config] ALLOW_LEGACY_AGENTS must be true or false")
 	}
@@ -87,13 +103,16 @@ func LoadConfig() *Config {
 	if err != nil {
 		log.Fatal("[Config] SELF_REGISTRATION_ENABLED must be true or false")
 	}
-	adminName := getEnv("SADMIN_USERNAME", "")
-	adminPassword := getEnv("SADMIN_PASSWORD", "")
-	if (adminName == "") != (adminPassword == "") {
-		log.Fatal("[Config] Set both SADMIN_USERNAME and SADMIN_PASSWORD, or neither")
+	bootstrapAdmin, err := strconv.ParseBool(getEnv("BOOTSTRAP_ADMIN", "false"))
+	if err != nil {
+		log.Fatal("[Config] BOOTSTRAP_ADMIN must be true or false")
 	}
-	if adminName != "" && (len(adminName) > 50 || len(adminPassword) < 12 || len(adminPassword) > 72) {
-		log.Fatal("[Config] Initial admin username must be at most 50 bytes and password 12-72 bytes")
+	adminName, adminPassword := "", ""
+	if bootstrapAdmin {
+		adminName, adminPassword = getEnv("SADMIN_USERNAME", ""), getEnv("SADMIN_PASSWORD", "")
+		if err := ValidateBootstrapCredentials(adminName, adminPassword); err != nil {
+			log.Fatalf("[Config] %s", err)
+		}
 	}
 
 	return &Config{
@@ -111,17 +130,48 @@ func LoadConfig() *Config {
 		JWTExpiresIn:    exp,
 		AgentSecret:     agentSecret,
 		AgentReleaseDir: getEnv("AGENT_RELEASE_DIR", "agent-releases"),
+		FrontendDistDir: getEnv("FRONTEND_DIST_DIR", ""),
 		AllowedOrigins: splitAndTrim(getEnv("ALLOWED_ORIGINS",
 			"http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000")),
 		TrustedProxies:          splitAndTrim(getEnv("TRUSTED_PROXIES", "")),
 		SAdminUsername:          adminName,
 		SAdminPassword:          adminPassword,
+		BootstrapAdmin:          bootstrapAdmin,
 		AllowLegacyAgents:       allowLegacyAgents,
 		SelfRegistrationEnabled: registrationEnabled,
 		CookieSecure:            cookieSecure,
 		CookieSameSite:          cookieSameSite,
 		CookieDomain:            getEnv("COOKIE_DOMAIN", ""),
 	}
+}
+
+// Example detection is a configuration guard, not an entropy estimator.
+func exampleSecret(value string) bool {
+	for _, example := range []string{"ใส่รหัสผ่าน12ถึง72bytes", "ใส่ค่าสุ่มอย่างน้อย32bytes", "REPLACE_WITH_STRONG_PASSWORD", "REPLACE_WITH_RANDOM_SECRET", "your-secret-key-at-least-32-characters", "changeme", "password", "password123", "123456789012345", "ชื่อadminที่ต้องการ"} {
+		if strings.EqualFold(strings.TrimSpace(value), example) {
+			return true
+		}
+	}
+	runes := []rune(value)
+	if len(runes) == 0 {
+		return true
+	}
+	for _, r := range runes[1:] {
+		if r != runes[0] {
+			return false
+		}
+	}
+	return true
+}
+
+func ValidateBootstrapCredentials(username, password string) error {
+	if username == "" || strings.TrimSpace(username) != username || len(username) > 50 || exampleSecret(username) {
+		return fmt.Errorf("Bootstrap admin username is missing, invalid or a documented example")
+	}
+	if utf8.RuneCountInString(password) < 15 || len(password) > 72 || exampleSecret(password) {
+		return fmt.Errorf("Bootstrap admin password must have at least 15 characters, at most 72 bytes, and must not be a documented example")
+	}
+	return nil
 }
 
 func isLoopbackAddress(addr string) bool {

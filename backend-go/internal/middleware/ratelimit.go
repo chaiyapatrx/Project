@@ -12,6 +12,31 @@ import (
 
 const maxRateLimitClients = 10000
 
+// Shared by browser and station logins, keyed by canonical database user ID.
+// Per-process throttling can impose a temporary one-minute account lockout;
+// deployments with multiple backends need a shared store or gateway limiter.
+var accountLoginLimiter = NewIPRateLimiter(10, time.Minute)
+
+func AccountLoginAllowed(c *gin.Context, userID int) bool {
+	allowed, retryAfter := accountLoginLimiter.Allow(strconv.Itoa(userID))
+	if !allowed {
+		RejectRateLimited(c, retryAfter)
+	}
+	return allowed
+}
+
+func RejectRateLimited(c *gin.Context, retryAfter time.Duration) {
+	seconds := int(retryAfter.Seconds())
+	if retryAfter%time.Second != 0 {
+		seconds++
+	}
+	if seconds < 1 {
+		seconds = 1
+	}
+	c.Header("Retry-After", strconv.Itoa(seconds))
+	c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"error": "Too many requests; try again later"})
+}
+
 type rateLimitEntry struct {
 	ip        string
 	startedAt time.Time
@@ -82,15 +107,7 @@ func RateLimitByIP(limit int, window time.Duration) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		allowed, retryAfter := limiter.Allow(c.ClientIP())
 		if !allowed {
-			seconds := int(retryAfter.Seconds())
-			if retryAfter%time.Second != 0 {
-				seconds++
-			}
-			if seconds < 1 {
-				seconds = 1
-			}
-			c.Header("Retry-After", strconv.Itoa(seconds))
-			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"error": "Too many requests; try again later"})
+			RejectRateLimited(c, retryAfter)
 			return
 		}
 		c.Next()

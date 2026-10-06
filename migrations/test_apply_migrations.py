@@ -4,10 +4,35 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-from apply_migrations import apply_migrations, database_tls_context
+from apply_migrations import apply_migrations, database_tls_context, parse_env_value, split_sql
 
 
 class DatabaseTLSContextTests(unittest.TestCase):
+    def test_env_values_match_backend_quoted_passwords(self):
+        self.assertEqual(parse_env_value('"password # with=space" # note', {}), 'password # with=space')
+        self.assertEqual(parse_env_value(r'"quoted\"pass\\word"', {}), 'quoted"pass\\word')
+        self.assertEqual(parse_env_value('${FIRST}_suffix', {'FIRST': 'prefix'}), 'prefix_suffix')
+        self.assertEqual(parse_env_value("'$FIRST' # note", {'FIRST': 'prefix'}), '$FIRST')
+        self.assertEqual(parse_env_value(r'\$FIRST', {'FIRST': 'prefix'}), '$FIRST')
+        with self.assertRaises(ValueError):
+            parse_env_value('"unclosed', {})
+
+    def test_sql_parser_preserves_quoted_semicolons_and_comments(self):
+        self.assertEqual(split_sql("SELECT 'a;''b'; -- comment\nSELECT 2/* ; */;"),
+                         ["SELECT 'a;''b'", "SELECT 2"])
+        for sql in ("SELECT 'unfinished", "SELECT 1 /* unfinished"):
+            with self.assertRaises(ValueError):
+                split_sql(sql)
+
+    def test_enrollment_migration_resumes_after_column(self):
+        cursor = Mock()
+        cursor.fetchone.side_effect = [None, ("pending_approval",), None]
+        with patch("apply_migrations.os.listdir", return_value=["000006_agent_enrollment.up.sql"]):
+            apply_migrations(cursor, Mock())
+        statements = [call.args[0] for call in cursor.execute.call_args_list]
+        self.assertFalse(any("ADD COLUMN" in sql for sql in statements))
+        self.assertTrue(any("ADD INDEX" in sql for sql in statements))
+
     def test_loopback_hosts_keep_local_development_usable(self):
         for host in ("localhost", "127.0.0.1", "::1", "[::1]"):
             with self.subTest(host=host):
