@@ -2,6 +2,8 @@
 
 คู่มือปัจจุบันปรับปรุงวันที่ 6 ตุลาคม 2026 ใช้ Go backend, React frontend, MySQL/MariaDB และ Agent สำหรับ Windows รุ่น Agent อ่านจาก `client-go/VERSION` ผลตรวจและข้อจำกัดอยู่ใน [AUDIT.md](AUDIT.md) การติดตั้งหลายเครื่องอยู่ใน [LAN_SETUP.md](LAN_SETUP.md)
 
+สำหรับติดตั้ง Windows แบบอัตโนมัติ ใช้ [ตัวติดตั้ง Server และ Client](installer/README.md) แทนขั้นตอน setup ด้วยตนเองด้านล่าง
+
 ## 1. โครงสร้างและการทำงาน
 
 ```text
@@ -246,7 +248,7 @@ Remove-Item Env:AUCC_SERVER_URL
 
 สำรอง release storage และ DB คู่กัน รุ่นที่ยังอาจ rollback ต้องเก็บไว้ Updater เองไม่ได้เปลี่ยนผ่านการอัปเดต Agent ต้องติดตั้ง Setup ใหม่เมื่อ updater เปลี่ยน ตรวจ `update.log` และไฟล์แจ้งอัปเดตล้มเหลวในโฟลเดอร์ติดตั้ง
 
-Agent 1.0.9 ขึ้นไปอัปเดตอัตโนมัติเฉพาะ HTTPS/WSS ที่ตรวจ certificate แม้ server อยู่ localhost การทดลอง `ws://localhost` ยังใช้ login/คำสั่งเพื่อพัฒนาได้ แต่ไม่ใช้ auto-update ติดตั้งไฟล์ใหม่ผ่าน Setup ที่ไว้ใจได้แทน
+Agent รุ่นปัจจุบันอัปเดตอัตโนมัติเฉพาะ HTTPS/WSS ที่ตรวจ certificate แม้ server อยู่ localhost การทดลอง `ws://localhost` ยังใช้ login/คำสั่งเพื่อพัฒนาได้ แต่ไม่ใช้ auto-update ติดตั้งไฟล์ใหม่ผ่าน Setup ที่ไว้ใจได้แทน
 
 ## 8. Backup และ restore
 

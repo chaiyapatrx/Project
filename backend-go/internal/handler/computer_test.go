@@ -1,6 +1,24 @@
 package handler
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
+
+func TestPrivatePackageEnrollmentToken(t *testing.T) {
+	token := strings.Repeat("aB9_", 11)
+	for _, test := range []struct {
+		expected, supplied string
+		want               bool
+	}{
+		{token, token, true}, {"", "", false}, {"", token, false},
+		{token, "", false}, {token, token + "x", false}, {token, strings.Repeat("x", 257), false},
+	} {
+		if got := validEnrollmentToken(test.expected, test.supplied); got != test.want {
+			t.Fatalf("enrollment token authorization = %v, want %v", got, test.want)
+		}
+	}
+}
 
 func TestReleasedStationStatus(t *testing.T) {
 	for _, status := range []string{"available", "maintenance", "disabled", "in_use"} {

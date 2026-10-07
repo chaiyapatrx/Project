@@ -153,6 +153,7 @@ func main() {
 	// Handlers
 	authH := handler.NewAuthHandler(db, cfg)
 	compH := handler.NewComputerHandler(db, h)
+	compH.EnrollmentToken = cfg.EnrollmentToken
 	updatesH, err := handler.NewAgentUpdateHandler(db, cfg.AgentReleaseDir)
 	if err != nil {
 		log.Fatalf("[Agent Updates] Cannot initialize release storage: %v", err)

@@ -26,6 +26,7 @@ type Config struct {
 	JWTSecret               string
 	JWTExpiresIn            int
 	AgentSecret             string
+	EnrollmentToken         string
 	AgentReleaseDir         string
 	FrontendDistDir         string
 	AllowedOrigins          []string
@@ -92,6 +93,10 @@ func LoadConfig() *Config {
 		log.Fatal("[Config] JWT_SECRET must not be a documented example or repeated character")
 	}
 	agentSecret := getEnv("AGENT_SECRET", "")
+	enrollmentToken := getEnv("AGENT_ENROLLMENT_TOKEN", "")
+	if enrollmentToken != "" && (len(enrollmentToken) < 32 || len(enrollmentToken) > 256 || exampleSecret(enrollmentToken)) {
+		log.Fatal("[Config] AGENT_ENROLLMENT_TOKEN must be a random value of 32-256 bytes")
+	}
 	allowLegacyAgents, err := strconv.ParseBool(getEnv("ALLOW_LEGACY_AGENTS", "false"))
 	if err != nil {
 		log.Fatal("[Config] ALLOW_LEGACY_AGENTS must be true or false")
@@ -129,6 +134,7 @@ func LoadConfig() *Config {
 		JWTSecret:       jwtSecret,
 		JWTExpiresIn:    exp,
 		AgentSecret:     agentSecret,
+		EnrollmentToken: enrollmentToken,
 		AgentReleaseDir: getEnv("AGENT_RELEASE_DIR", "agent-releases"),
 		FrontendDistDir: getEnv("FRONTEND_DIST_DIR", ""),
 		AllowedOrigins: splitAndTrim(getEnv("ALLOWED_ORIGINS",

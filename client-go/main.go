@@ -37,10 +37,11 @@ type Config struct {
 	PingIntervalSeconds int    `json:"ping_interval_seconds"`
 	AgentSecret         string `json:"agent_secret"`
 	AutoEnroll          bool   `json:"auto_enroll"`
+	EnrollmentToken     string `json:"enrollment_token,omitempty"`
 	enrollmentApproved  bool
 }
 
-var agentVersion = "1.0.9"
+var agentVersion = "1.0.0"
 
 var (
 	agentCommandReplayMu   sync.Mutex
@@ -1152,7 +1153,7 @@ func enrollAgent(ctx context.Context, cfg *Config, hwid string) error {
 	if err != nil {
 		return err
 	}
-	body, err := json.Marshal(map[string]string{"name": cfg.MachineName, "hwid": hwid, "secret": cfg.AgentSecret})
+	body, err := json.Marshal(map[string]string{"name": cfg.MachineName, "hwid": hwid, "secret": cfg.AgentSecret, "enrollment_token": cfg.EnrollmentToken})
 	if err != nil {
 		return err
 	}

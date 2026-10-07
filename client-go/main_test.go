@@ -303,7 +303,7 @@ func TestEnrollAgentWaitsForApproval(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&identity); err != nil {
 			t.Error(err)
 		}
-		if identity["name"] != "LAB-01" || identity["hwid"] != "HWID-01" || identity["secret"] != "secret" {
+		if identity["name"] != "LAB-01" || identity["hwid"] != "HWID-01" || identity["secret"] != "secret" || identity["enrollment_token"] != "private-package-token" {
 			t.Errorf("incorrect enrollment identity: %v", identity)
 		}
 		if approved.Load() {
@@ -313,7 +313,7 @@ func TestEnrollAgentWaitsForApproval(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	cfg := &Config{ServerURL: strings.Replace(server.URL, "http://", "ws://", 1) + "/api/ws/agent", MachineName: "LAB-01", AgentSecret: "secret"}
+	cfg := &Config{ServerURL: strings.Replace(server.URL, "http://", "ws://", 1) + "/api/ws/agent", MachineName: "LAB-01", AgentSecret: "secret", EnrollmentToken: "private-package-token"}
 	if err := enrollAgent(context.Background(), cfg, "HWID-01"); err == nil || !strings.Contains(err.Error(), "waiting for administrator") {
 		t.Fatalf("pending enrollment returned %v", err)
 	}

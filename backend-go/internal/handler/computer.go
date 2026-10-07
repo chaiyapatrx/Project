@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/base64"
 	"fmt"
@@ -20,6 +22,8 @@ import (
 type ComputerHandler struct {
 	db  *sqlx.DB
 	hub *hub.Hub
+	// ponytail: deployment-scoped enrollment key; use expiring tokens if installers cannot remain private.
+	EnrollmentToken string
 }
 
 type pendingAgent struct {
@@ -88,13 +92,14 @@ func (h *ComputerHandler) ListComputersAdmin(c *gin.Context) {
 	c.JSON(http.StatusOK, computers)
 }
 
-// EnrollAgent records a machine's self-generated credential. It cannot connect
-// or appear in booking lists until an admin approves it.
+// EnrollAgent records a machine's self-generated credential. Ordinary requests
+// require admin approval; the private deployment package can approve new stations.
 func (h *ComputerHandler) EnrollAgent(c *gin.Context) {
 	var req struct {
-		Name   string `json:"name" binding:"required"`
-		HWID   string `json:"hwid" binding:"required"`
-		Secret string `json:"secret" binding:"required"`
+		Name            string `json:"name" binding:"required"`
+		HWID            string `json:"hwid" binding:"required"`
+		Secret          string `json:"secret" binding:"required"`
+		EnrollmentToken string `json:"enrollment_token"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid enrollment request"})
@@ -131,12 +136,30 @@ func (h *ComputerHandler) EnrollAgent(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check station enrollment"})
 		return
 	}
-	_, err = h.db.Exec("INSERT INTO computers (name, hwid, agent_secret_hash, status, is_active, pending_approval) VALUES (?, ?, ?, 'disabled', 0, 1)", req.Name, req.HWID, auth.HashAgentSecret(req.Secret))
+	approved := validEnrollmentToken(h.EnrollmentToken, req.EnrollmentToken)
+	status := "disabled"
+	if approved {
+		status = "available"
+	}
+	_, err = h.db.Exec("INSERT INTO computers (name, hwid, agent_secret_hash, status, is_active, pending_approval) VALUES (?, ?, ?, ?, ?, ?)", req.Name, req.HWID, auth.HashAgentSecret(req.Secret), status, approved, !approved)
 	if err != nil {
 		c.JSON(http.StatusConflict, gin.H{"error": "Station name or hardware ID is already registered"})
 		return
 	}
+	if approved {
+		recordAudit(c, h.db, "agent_enrollment_auto_approved", "computer", "", "Private installation package enrolled a new station: "+req.Name)
+		c.JSON(http.StatusOK, gin.H{"status": "approved"})
+		return
+	}
 	c.JSON(http.StatusAccepted, gin.H{"status": "pending"})
+}
+
+func validEnrollmentToken(expected, supplied string) bool {
+	if expected == "" || len(supplied) > 256 {
+		return false
+	}
+	a, b := sha256.Sum256([]byte(expected)), sha256.Sum256([]byte(supplied))
+	return subtle.ConstantTimeCompare(a[:], b[:]) == 1
 }
 
 func (h *ComputerHandler) ListPendingAgents(c *gin.Context) {

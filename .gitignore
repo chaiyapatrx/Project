@@ -11,6 +11,8 @@
 /.claude/settings.local.json
 /client-go/config.json
 /client-go/dist/
+/installer/dist/
+/installer/cache/
 /agent-releases/
 /backend-go/agent-releases/
 /client-go/AUCCAgent-update-failed.txt
