@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../App';
 import { apiFetch } from '../api';
 import { passwordByteLength } from '../password';
+import { APP_NAME } from '../brand';
 
 const styles = `
   .glass-panel {
@@ -105,7 +106,7 @@ function Login() {
                             <div
                                 className="absolute inset-0 bg-cover bg-center transition-transform duration-1000 group-hover:scale-105"
                                 style={{
-                                    backgroundImage: `linear-gradient(rgba(124,58,237,0.1), rgba(46,16,101,0.6)), url("https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=1964&auto=format&fit=crop")`
+                                    backgroundImage: 'linear-gradient(135deg, #7c3aed 0%, #4c1d95 55%, #2e1065 100%)'
                                 }}
                             ></div>
 
@@ -118,7 +119,7 @@ function Login() {
 
                             <div className="absolute bottom-0 left-0 p-12 w-full bg-gradient-to-t from-black/40 via-transparent to-transparent min-h-[220px] flex flex-col justify-end">
                                 <div className="animate-fade-in flex flex-col gap-3">
-                                    <h3 className="text-white text-3xl font-bold leading-tight">Computer Lab Access</h3>
+                                    <h3 className="text-white text-3xl font-bold leading-tight">{APP_NAME}</h3>
                                     <p className="text-white/90 text-sm font-light max-w-sm leading-relaxed text-left">Sign in to reserve a station and manage your lab sessions.</p>
                                 </div>
                             </div>

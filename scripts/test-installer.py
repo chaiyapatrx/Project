@@ -35,7 +35,7 @@ def main():
     processes, logs = [], []
     flags = subprocess.CREATE_NO_WINDOW
     try:
-        setup = stage / "backend-go" / "AUCCProvision.exe"
+        setup = stage / "backend-go" / "LabAccessProvision.exe"
         subprocess.run([str(setup), "prepare", str(root), "localhost"], check=True, creationflags=flags)
         values = {}
         for line in (root / ".env").read_text(encoding="utf-8").splitlines():
@@ -79,7 +79,7 @@ def main():
                 cursor.execute("SELECT User, Host FROM mysql.global_priv WHERE User = '' OR User = 'root'")
                 assert cursor.fetchall() == (("root", "127.0.0.1"),), "Bundled database retained anonymous or remote root accounts"
         logs.append(open(root / "backend.log", "wb"))
-        backend = subprocess.Popen([str(stage / "backend-go" / "AUCCServer.exe")], env=env,
+        backend = subprocess.Popen([str(stage / "backend-go" / "LabAccessServer.exe")], env=env,
                                    cwd=root / "backend-go", stdout=logs[-1], stderr=subprocess.STDOUT, creationflags=flags)
         processes.append(backend)
         context = ssl.create_default_context(cafile=str(root / "tls" / "ca.pem"))
@@ -108,14 +108,15 @@ def main():
             raise AssertionError("HTTPS readiness timed out: " + last_error)
         assert request("/")[0] == 200, "Built frontend not served"
         assert request("/api/auth/login", {"username": "admin", "password": values["SADMIN_PASSWORD"]})[0] == 200, "Generated admin login failed"
-        local = root / "local" / "AUCC Agent"
+
+        local = root / "local" / "LabAccess Agent"
         local.mkdir(parents=True)
         (local / "config.json").write_text(json.dumps({
             "server_url": origin.replace("https:", "wss:") + "/api/ws/agent",
             "server_ca_file": str(root / "tls" / "ca.pem"), "machine_name": "AGENT-SMOKE",
             "auto_enroll": True, "enrollment_token": values["AGENT_ENROLLMENT_TOKEN"],
         }), encoding="utf-8")
-        subprocess.run([str(stage / "client-template" / "dist" / "AUCCAgent.exe"), "--enroll"],
+        subprocess.run([str(stage / "client-template" / "dist" / "LabAccessAgent.exe"), "--enroll"],
                        env=dict(env, LOCALAPPDATA=str(root / "local")), check=True, creationflags=flags, timeout=20)
         assert "AGENT-SMOKE" in request("/computers")[1].decode(), "Actual Agent binary failed to enroll automatically"
         secret = base64.urlsafe_b64encode(os.urandom(32)).decode().rstrip("=")
@@ -126,10 +127,20 @@ def main():
         assert request("/api/agent/enroll", dict(identity, secret=base64.urlsafe_b64encode(os.urandom(32)).decode().rstrip("=")))[0] == 409, "Installer key replaced an existing station credential"
         assert request("/api/agent/enroll", dict(identity, name="PENDING-TEST", hwid="PENDING-HWID", enrollment_token="wrong"))[0] == 202, "Invalid installer key bypassed admin approval"
         assert "AUTO-TEST" in request("/computers")[1].decode() and "PENDING-TEST" not in request("/computers")[1].decode(), "Public stations do not match approval status"
-        with pymysql.connect(host="127.0.0.1", port=db_port, user=values["DB_USER"], password=values["DB_PASS"], database="aucc", autocommit=True) as connection:
+        with pymysql.connect(host="127.0.0.1", port=db_port, user=values["DB_USER"], password=values["DB_PASS"], database="labaccess", autocommit=True) as connection:
             with connection.cursor() as cursor:
                 cursor.execute("UPDATE computers SET is_active=0, status='disabled' WHERE name='AUTO-TEST'")
-        assert request("/api/agent/enroll", identity)[0] == 409, "Installer key reactivated a disabled station"
+        assert request("/api/agent/enroll", identity)[0] == 202, "Removed station could not ask to return"
+        assert "AUTO-TEST" not in request("/computers")[1].decode(), "Installer key reactivated a removed station without admin approval"
+        subprocess.run(["cmd", "/c", "mklink", "/J", str(root / "mariadb"), str(stage / "mariadb")],
+                       check=True, capture_output=True, creationflags=flags)
+        result = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
+                                 str(project / "scripts" / "install-server.ps1"), "-Mode", "Backup", "-Root", str(root)],
+                                capture_output=True, creationflags=flags, timeout=120)
+        assert result.returncode == 0, "Database backup failed: " + result.stderr.decode(errors="replace")
+        backups = list((root / "backups").glob("labaccess_*.sql"))
+        assert len(backups) == 1 and b"CREATE TABLE `computers`" in backups[0].read_bytes(), "Backup does not contain the database"
+        assert not (root / "database-backup.cnf").exists(), "Backup left root credentials on disk"
         subprocess.run([str(setup), "finish", str(root), "localhost"], check=True, creationflags=flags)
         before = (root / ".env").read_bytes()
         subprocess.run([str(setup), "prepare", str(root), "localhost"], check=True, creationflags=flags)
@@ -140,8 +151,8 @@ def main():
                                  str(project / "scripts" / "install-server.ps1"), "-Mode", "Export", "-Root", str(root)],
                                 capture_output=True, creationflags=flags, timeout=210)
         assert result.returncode == 0, "Single-file client packaging failed: " + result.stderr.decode(errors="replace")
-        assert (root / "AUCCClientSetup.exe").read_bytes()[:2] == b"MZ", "Client package is not a Windows executable"
-        print("Installer smoke test passed: bundled DB/Python, migration retry, trusted HTTPS, frontend, admin login, actual Agent enrollment, private enrollment, collision rejection, disabled stations, repair and Client Setup compilation.")
+        assert (root / "LabAccessClientSetup.exe").read_bytes()[:2] == b"MZ", "Client package is not a Windows executable"
+        print("Installer smoke test passed: bundled DB/Python, migration retry, trusted HTTPS, frontend, admin login, actual Agent enrollment, private enrollment, collision rejection, disabled stations, database backup, repair and Client Setup compilation.")
     finally:
         for process in reversed(processes):
             if process.poll() is None:
@@ -150,6 +161,8 @@ def main():
         for log in logs:
             log.close()
         assert root.parent == parent and root.name.startswith(".test-")
+        if (root / "mariadb").is_junction():
+            os.rmdir(root / "mariadb")  # never delete the shared payload through the link
         shutil.rmtree(root)
 
 

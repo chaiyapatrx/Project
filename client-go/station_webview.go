@@ -50,12 +50,12 @@ func startStationLockOverlay() error {
 
 func runStationWebOverlay(ready chan<- error) {
 	runtime.LockOSThread()
-	dataPath := filepath.Join(os.Getenv("LOCALAPPDATA"), "AUCC Agent", "WebView2")
+	dataPath := filepath.Join(os.Getenv("LOCALAPPDATA"), "LabAccess Agent", "WebView2")
 	view := webview2.NewWithOptions(webview2.WebViewOptions{
 		AutoFocus: true,
 		DataPath:  dataPath,
 		WindowOptions: webview2.WindowOptions{
-			Title:  "AUCC Station Access",
+			Title:  "ระบบเข้าใช้งานคอมพิวเตอร์",
 			Width:  uint(systemMetric(78)),
 			Height: uint(systemMetric(79)),
 		},

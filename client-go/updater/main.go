@@ -19,7 +19,7 @@ func main() {
 		return
 	}
 	current, staged, version, expectedSHA := os.Args[1], os.Args[2], os.Args[3], os.Args[4]
-	if !strings.EqualFold(filepath.Base(current), "AUCCAgent.exe") || filepath.Dir(current) != filepath.Dir(staged) || strings.EqualFold(current, staged) || len(expectedSHA) != 64 || strings.Trim(expectedSHA, "0123456789abcdef") != "" {
+	if !strings.EqualFold(filepath.Base(current), "LabAccessAgent.exe") || filepath.Dir(current) != filepath.Dir(staged) || strings.EqualFold(current, staged) || len(expectedSHA) != 64 || strings.Trim(expectedSHA, "0123456789abcdef") != "" {
 		return
 	}
 	defer os.Remove(staged)
@@ -28,7 +28,7 @@ func main() {
 		defer file.Close()
 		log.SetOutput(file)
 	}
-	marker := filepath.Join(filepath.Dir(current), "AUCCAgent-update-failed.txt")
+	marker := filepath.Join(filepath.Dir(current), "LabAccessAgent-update-failed.txt")
 	if err := replaceAgent(current, staged, version, expectedSHA); err != nil {
 		_ = os.WriteFile(marker, []byte(expectedSHA), 0600)
 		log.Printf("Agent update failed: %v", err)
@@ -49,7 +49,7 @@ func replaceAgent(current, staged, version, expectedSHA string) error {
 	if err != nil || strings.TrimSpace(string(output)) != version {
 		return restartCurrent(current, fmt.Errorf("staged Agent version mismatch"))
 	}
-	backup, err := os.CreateTemp(filepath.Dir(current), "AUCCAgent-backup-*.exe")
+	backup, err := os.CreateTemp(filepath.Dir(current), "LabAccessAgent-backup-*.exe")
 	if err != nil {
 		return restartCurrent(current, err)
 	}
@@ -67,7 +67,7 @@ func replaceAgent(current, staged, version, expectedSHA string) error {
 		_ = os.Remove(backupPath)
 		return restartCurrent(current, fmt.Errorf("cannot back up installed Agent"))
 	}
-	if err := replaceWithRetry(staged, current); err != nil {
+	if err := swapIn(staged, current); err != nil {
 		_ = os.Remove(backupPath)
 		return restartCurrent(current, fmt.Errorf("cannot replace installed Agent: %w", err))
 	}
@@ -89,7 +89,7 @@ func replaceAgent(current, staged, version, expectedSHA string) error {
 }
 
 func restoreAgent(backup, current string, cause error) error {
-	if err := replaceWithRetry(backup, current); err != nil {
+	if err := swapIn(backup, current); err != nil {
 		return fmt.Errorf("%v; rollback failed: %w", cause, err)
 	}
 	command := exec.Command(current)
@@ -109,6 +109,24 @@ func restartCurrent(current string, cause error) error {
 	}
 	_ = command.Process.Release()
 	return cause
+}
+
+// swapIn puts source at target. Windows can deny replacing an EXE that is
+// running or just ran, but allows renaming it aside first.
+func swapIn(source, target string) error {
+	aside := target + ".old"
+	_ = os.Remove(aside)
+	moved := os.Rename(target, aside) == nil
+	if err := replaceWithRetry(source, target); err != nil {
+		if moved {
+			_ = os.Rename(aside, target)
+		}
+		return err
+	}
+	if moved {
+		_ = os.Remove(aside) // still locked while the old EXE runs; removed on the next swap
+	}
+	return nil
 }
 
 func replaceWithRetry(source, target string) error {

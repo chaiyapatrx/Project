@@ -9,6 +9,7 @@ import StudentDashboard from './page/StudentDashboard';
 import AdminDashboard from './page/AdminDashboard';
 import StaffDashboard from './page/StaffDashboard'; // ✅ 1. เพิ่ม Import Staff
 import ExecDashboard from './page/ExecDashboard';
+import BrandName from './BrandName';
 
 // ==========================================
 // 1. Context จัดการระบบ Login
@@ -64,10 +65,10 @@ export const AuthProvider = ({ children }) => {
     const syncSession = event => {
       if (event.key === 'user_data' || event.key === null) window.location.reload();
     };
-    window.addEventListener('aucc:session-expired', expireSession);
+    window.addEventListener('labaccess:session-expired', expireSession);
     window.addEventListener('storage', syncSession);
     return () => {
-      window.removeEventListener('aucc:session-expired', expireSession);
+      window.removeEventListener('labaccess:session-expired', expireSession);
       window.removeEventListener('storage', syncSession);
     };
   }, [navigate]);
@@ -150,8 +151,6 @@ const GuestRoute = ({ children }) => {
 // ==========================================
 // --- Shared Styles (Copied from StudentDashboard) ---
 const publicStyles = `
-  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;900&display=swap');
-  @import url('https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap');
 
   body {
     font-family: 'Inter', sans-serif;
@@ -234,7 +233,7 @@ const PublicHome = () => {
             <div className="w-8 h-8 bg-primary rounded-lg flex items-center justify-center">
               <span className="material-symbols-outlined text-white text-xl">computer</span>
             </div>
-            <span className="font-bold text-xl tracking-tight text-slate-800">Station<span className="text-primary">Dash</span></span>
+            <BrandName />
           </div>
 
           <div className="flex items-center gap-4">
@@ -267,7 +266,7 @@ const PublicHome = () => {
           <div className="flex items-center justify-between mb-6 shrink-0">
             <div>
               <h2 className="text-2xl font-bold text-slate-900">Computer Stations Overview</h2>
-              <p className="text-slate-500 text-sm mt-0.5">Live status from Computer Lab</p>
+              <p className="text-slate-500 text-sm mt-0.5">Live status from every station</p>
             </div>
             <div className="flex items-center gap-2 px-4 py-2 rounded-full bg-purple-50 border border-purple-100 shadow-sm">
               <div className="w-2.5 h-2.5 rounded-full bg-primary animate-pulse"></div>

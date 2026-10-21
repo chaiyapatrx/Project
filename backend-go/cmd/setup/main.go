@@ -1,4 +1,4 @@
-// AUCCSetup prepares a private, self-contained Windows server installation.
+// LabAccessSetup prepares a private, self-contained Windows server installation.
 package main
 
 import (
@@ -26,7 +26,7 @@ import (
 
 func main() {
 	if len(os.Args) != 4 {
-		fmt.Fprintln(os.Stderr, "Usage: AUCCSetup prepare|finish ROOT HOST")
+		fmt.Fprintln(os.Stderr, "Usage: LabAccessSetup prepare|finish ROOT HOST")
 		os.Exit(1)
 	}
 	root, err := filepath.Abs(os.Args[2])
@@ -73,7 +73,7 @@ func prepare(root, host string) error {
 		if err != nil {
 			return err
 		}
-		if values["HTTP_ADDR"] != "0.0.0.0:8000" || values["DB_PORT"] != "3308" || values["DB_USER"] != "aucc_app" || values["DB_NAME"] != "aucc" {
+		if values["HTTP_ADDR"] != "0.0.0.0:8000" || values["DB_PORT"] != "3308" || values["DB_USER"] != "labaccess_app" || values["DB_NAME"] != "labaccess" {
 			return fmt.Errorf("this folder contains an unmanaged installation; use a separate folder")
 		}
 		return nil
@@ -98,19 +98,30 @@ func prepare(root, host string) error {
 			return err
 		}
 	}
-	if err := createCertificate(root, host); err != nil {
+	ips := lanIPv4s(interfaceAddrs())
+	if err := createCertificate(root, host, ips); err != nil {
 		return err
 	}
 	url := "https://" + host + ":8000"
+	origins := []string{url, "https://localhost:8000"}
+	ipURLs, ipAgentURLs := "", ""
+	for _, ip := range ips {
+		if ip.String() == host {
+			continue
+		}
+		origins = append(origins, "https://"+ip.String()+":8000")
+		ipURLs += "   ถ้าเปิดไม่ได้ ลองที่อยู่นี้: https://" + ip.String() + ":8000\r\n"
+		ipAgentURLs += " wss://" + ip.String() + ":8000/api/ws/agent"
+	}
 	files := map[string]string{
 		"database-admin.txt":            "MariaDB root (localhost only): " + secrets[0] + "\r\n",
-		"admin-login.txt":               "AUCC URL: " + url + "\r\nUsername: admin\r\nPassword: " + secrets[3] + "\r\nChange this password after signing in.\r\n",
-		"AUCC.url":                      "[InternetShortcut]\r\nURL=" + url + "\r\n",
-		"client-package/deployment.ini": "[AUCC]\r\nServerURL=wss://" + host + ":8000/api/ws/agent\r\nEnrollmentToken=" + secrets[4] + "\r\n",
+		"admin-login.txt":               "\uFEFF1. เปิดเว็บ LabAccess ที่: " + url + "\r\n" + ipURLs + "2. ชื่อผู้ใช้: admin\r\n3. รหัสผ่าน: " + secrets[3] + "\r\n4. เก็บไฟล์นี้เป็นความลับ\r\n",
+		"LabAccess.url":                 "[InternetShortcut]\r\nURL=" + url + "\r\n",
+		"client-package/deployment.ini": "[LabAccess]\r\nServerURL=wss://" + host + ":8000/api/ws/agent\r\nAlternateURLs=" + strings.TrimSpace(ipAgentURLs) + "\r\nEnrollmentToken=" + secrets[4] + "\r\n",
 		"my.ini":                        "[mysqld]\r\nbasedir=" + filepath.ToSlash(filepath.Join(root, "mariadb")) + "\r\ndatadir=" + filepath.ToSlash(filepath.Join(root, "data")) + "\r\nport=3308\r\nbind-address=127.0.0.1\r\ncharacter-set-server=utf8mb4\r\ncollation-server=utf8mb4_unicode_ci\r\nskip-name-resolve\r\n",
-		"database-init.sql": "CREATE DATABASE IF NOT EXISTS aucc CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;\n" +
-			"CREATE USER IF NOT EXISTS 'aucc_app'@'127.0.0.1' IDENTIFIED VIA mysql_native_password USING '" + mariaPassword(secrets[1]) + "';\n" +
-			"GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, INDEX, REFERENCES ON aucc.* TO 'aucc_app'@'127.0.0.1';\n" +
+		"database-init.sql": "CREATE DATABASE IF NOT EXISTS labaccess CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;\n" +
+			"CREATE USER IF NOT EXISTS 'labaccess_app'@'127.0.0.1' IDENTIFIED VIA mysql_native_password USING '" + mariaPassword(secrets[1]) + "';\n" +
+			"GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, INDEX, REFERENCES ON labaccess.* TO 'labaccess_app'@'127.0.0.1';\n" +
 			"CREATE USER IF NOT EXISTS 'root'@'127.0.0.1' IDENTIFIED VIA mysql_native_password USING '" + mariaPassword(secrets[0]) + "';\n" +
 			"ALTER USER 'root'@'127.0.0.1' IDENTIFIED VIA mysql_native_password USING '" + mariaPassword(secrets[0]) + "';\n" +
 			"GRANT ALL PRIVILEGES ON *.* TO 'root'@'127.0.0.1' WITH GRANT OPTION;\n" +
@@ -132,11 +143,11 @@ func prepare(root, host string) error {
 	}
 	// Write the marker last: failed preparation can be retried before DB initialization.
 	return godotenv.Write(map[string]string{
-		"DB_HOST": "127.0.0.1", "DB_PORT": "3308", "DB_USER": "aucc_app", "DB_PASS": secrets[1], "DB_NAME": "aucc",
-		"JWT_SECRET": secrets[2], "BOOTSTRAP_ADMIN": "true", "SADMIN_USERNAME": "admin", "SADMIN_PASSWORD": secrets[3],
+		"DB_HOST": "127.0.0.1", "DB_PORT": "3308", "DB_USER": "labaccess_app", "DB_PASS": secrets[1], "DB_NAME": "labaccess",
+		"JWT_SECRET": secrets[2], "JWT_EXPIRATION_MINUTES": "480", "BOOTSTRAP_ADMIN": "true", "SADMIN_USERNAME": "admin", "SADMIN_PASSWORD": secrets[3],
 		"HTTP_ADDR": "0.0.0.0:8000", "TLS_CERT_FILE": filepath.ToSlash(filepath.Join(root, "tls", "server.pem")),
 		"TLS_KEY_FILE": filepath.ToSlash(filepath.Join(root, "tls", "server.key")), "COOKIE_SECURE": "true", "COOKIE_SAMESITE": "lax",
-		"ALLOWED_ORIGINS": url + ",https://localhost:8000", "FRONTEND_DIST_DIR": "../frontend/dist",
+		"ALLOWED_ORIGINS": strings.Join(origins, ","), "FRONTEND_DIST_DIR": "../frontend/dist",
 		"AGENT_RELEASE_DIR": filepath.ToSlash(filepath.Join(root, "agent-releases")), "AGENT_ENROLLMENT_TOKEN": secrets[4],
 		"SELF_REGISTRATION_ENABLED": "false", "ALLOW_LEGACY_AGENTS": "false",
 	}, envPath)
@@ -161,7 +172,32 @@ func finish(root string) error {
 	return err
 }
 
-func createCertificate(root, host string) error {
+func interfaceAddrs() []net.Addr {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return nil // A name-only certificate still works where the server name resolves.
+	}
+	return addrs
+}
+
+// lanIPv4s lets stations on networks without name resolution reach the server by IP.
+func lanIPv4s(addrs []net.Addr) []net.IP {
+	var ips []net.IP
+	for _, addr := range addrs {
+		ipNet, ok := addr.(*net.IPNet)
+		if !ok {
+			continue
+		}
+		ip := ipNet.IP.To4()
+		if ip == nil || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() {
+			continue
+		}
+		ips = append(ips, ip)
+	}
+	return ips
+}
+
+func createCertificate(root, host string, extraIPs []net.IP) error {
 	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return err
@@ -172,7 +208,7 @@ func createCertificate(root, host string) error {
 	}
 	serial := func() *big.Int { n, _ := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128)); return n }
 	now := time.Now()
-	ca := &x509.Certificate{SerialNumber: serial(), Subject: pkix.Name{CommonName: "AUCC " + host + " Installation CA"},
+	ca := &x509.Certificate{SerialNumber: serial(), Subject: pkix.Name{CommonName: "LabAccess " + host + " Installation CA"},
 		NotBefore: now.Add(-time.Hour), NotAfter: now.AddDate(10, 0, 0), IsCA: true, BasicConstraintsValid: true,
 		KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign}
 	caDER, err := x509.CreateCertificate(rand.Reader, ca, ca, &caKey.PublicKey, caKey)
@@ -192,6 +228,11 @@ func createCertificate(root, host string) error {
 		server.IPAddresses = append(server.IPAddresses, ip)
 	} else {
 		server.DNSNames = append(server.DNSNames, host)
+	}
+	for _, ip := range extraIPs {
+		if !ip.Equal(net.ParseIP(host)) {
+			server.IPAddresses = append(server.IPAddresses, ip)
+		}
 	}
 	serverDER, err := x509.CreateCertificate(rand.Reader, server, ca, &serverKey.PublicKey, caKey)
 	if err != nil {

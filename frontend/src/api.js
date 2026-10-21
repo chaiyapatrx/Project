@@ -67,7 +67,7 @@ export async function apiFetch(path, { method = 'GET', user = null, headers = {}
     body,
   });
   if (response.status === 401 && typeof window !== 'undefined' && !['/api/auth/login', '/token'].includes(url.pathname)) {
-    window.dispatchEvent(new Event('aucc:session-expired'));
+    window.dispatchEvent(new Event('labaccess:session-expired'));
   }
   return response;
 }

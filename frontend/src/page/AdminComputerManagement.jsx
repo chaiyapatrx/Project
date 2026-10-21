@@ -496,7 +496,7 @@ function AdminComputerManagement() {
                 {user?.role === 'admin' && (
                     <section className="bg-white rounded-xl border border-violet-200 p-4 mb-6">
                         <h2 className="font-bold text-slate-800 mb-1">Stations waiting for approval ({pendingAgents.length})</h2>
-                        <p className="text-sm text-slate-500 mb-3">Install AUCC Agent on the computer. Check its name and hardware ID before approving.</p>
+                        <p className="text-sm text-slate-500 mb-3">Install the client program (LabAccessClientSetup.exe) on the computer. Check its name and hardware ID before approving. A removed station that is installed again also appears here.</p>
                         {pendingError && <p className="text-sm text-rose-600 mb-2">Could not load pending stations. Check the backend connection and database migration.</p>}
                         {!pendingError && pendingAgents.length === 0 ? <p className="text-sm text-slate-400">No pending stations</p> : pendingAgents.map(agent => (
                             <div key={agent.id} className="flex items-center justify-between gap-3 border-t py-3">

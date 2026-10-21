@@ -41,8 +41,10 @@ func (monitorAuthConn) QueryContext(_ context.Context, query string, _ []driver.
 	}
 	return &monitorAuthRows{}, nil
 }
-func (*monitorAuthRows) Columns() []string { return []string{"role", "is_active", "token_version"} }
-func (*monitorAuthRows) Close() error      { return nil }
+func (*monitorAuthRows) Columns() []string {
+	return []string{"role", "is_active", "token_version"}
+}
+func (*monitorAuthRows) Close() error { return nil }
 func (r *monitorAuthRows) Next(values []driver.Value) error {
 	if r.read {
 		return io.EOF

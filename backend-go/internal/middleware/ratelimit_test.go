@@ -10,10 +10,11 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func TestAccountLoginLimitSharedAcrossIPsAndLoginRoutes(t *testing.T) {
-	previous := accountLoginLimiter
+func TestAccountLoginLimitSharedAcrossLoginRoutesPerIP(t *testing.T) {
+	previous, previousWide := accountLoginLimiter, accountWideLoginLimiter
 	accountLoginLimiter = NewIPRateLimiter(10, time.Minute)
-	defer func() { accountLoginLimiter = previous }()
+	accountWideLoginLimiter = NewIPRateLimiter(300, time.Minute)
+	defer func() { accountLoginLimiter, accountWideLoginLimiter = previous, previousWide }()
 	router := gin.New()
 	for _, route := range []string{"/browser", "/station"} {
 		router.POST(route, func(c *gin.Context) {
@@ -28,7 +29,7 @@ func TestAccountLoginLimitSharedAcrossIPsAndLoginRoutes(t *testing.T) {
 			route = "/station"
 		}
 		request := httptest.NewRequest(http.MethodPost, route, nil)
-		request.RemoteAddr = fmt.Sprintf("192.0.2.%d:1234", attempt+1)
+		request.RemoteAddr = "192.0.2.1:1234"
 		response := httptest.NewRecorder()
 		router.ServeHTTP(response, request)
 		want := http.StatusNoContent
@@ -42,9 +43,33 @@ func TestAccountLoginLimitSharedAcrossIPsAndLoginRoutes(t *testing.T) {
 			t.Fatalf("attempt %d status = %d, want %d", attempt+1, response.Code, want)
 		}
 	}
-	context, _ := gin.CreateTestContext(httptest.NewRecorder())
-	if !AccountLoginAllowed(context, 43) {
-		t.Fatal("one account's attempts blocked a different account")
+	for _, other := range []struct {
+		user int
+		ip   string
+	}{{43, "192.0.2.1"}, {42, "192.0.2.2"}} {
+		request := httptest.NewRequest(http.MethodPost, "/browser", nil)
+		request.RemoteAddr = other.ip + ":1234"
+		context, _ := gin.CreateTestContext(httptest.NewRecorder())
+		context.Request = request
+		if !AccountLoginAllowed(context, other.user) {
+			t.Fatalf("guesses from 192.0.2.1 blocked user %d at %s", other.user, other.ip)
+		}
+	}
+}
+
+func TestAccountWideLoginCapStopsSpreadOutGuessing(t *testing.T) {
+	previous, previousWide := accountLoginLimiter, accountWideLoginLimiter
+	accountLoginLimiter = NewIPRateLimiter(10, time.Minute)
+	accountWideLoginLimiter = NewIPRateLimiter(3, time.Minute)
+	defer func() { accountLoginLimiter, accountWideLoginLimiter = previous, previousWide }()
+	for attempt := 0; attempt < 4; attempt++ {
+		request := httptest.NewRequest(http.MethodPost, "/browser", nil)
+		request.RemoteAddr = fmt.Sprintf("192.0.2.%d:1234", attempt+1)
+		context, _ := gin.CreateTestContext(httptest.NewRecorder())
+		context.Request = request
+		if got := AccountLoginAllowed(context, 42); got != (attempt < 3) {
+			t.Fatalf("attempt %d from a new IP: allowed=%v", attempt+1, got)
+		}
 	}
 }
 

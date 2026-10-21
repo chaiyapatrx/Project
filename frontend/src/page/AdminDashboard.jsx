@@ -6,11 +6,10 @@ import AdminComputerManagement from './AdminComputerManagement';
 import AdminAnalytics from './AdminAnalytics';
 import AdminUsageHistory from './AdminUsageHistory';
 import AdminSettings from './AdminSettings';
+import BrandName from '../BrandName';
 
 // --- CSS Styles (Glassmorphism & Custom Scrollbar) ---
 const styles = `
-  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
-  @import url('https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap');
 
   body {
     font-family: 'Inter', sans-serif;
@@ -71,9 +70,7 @@ function AdminDashboard() {
                         <div className="w-10 h-10 bg-[#7c3aed] rounded-xl flex items-center justify-center shadow-lg shadow-purple-200">
                             <span className="material-symbols-outlined text-white">admin_panel_settings</span>
                         </div>
-                        <span className="font-extrabold text-xl tracking-tight text-slate-800">
-                            Admin<span className="text-[#7c3aed]">Core</span>
-                        </span>
+                        <BrandName role="Admin" />
                     </div>
 
                     <nav className="flex-1 mt-4 overflow-y-auto custom-scrollbar">

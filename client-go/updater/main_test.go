@@ -13,7 +13,7 @@ import (
 
 func TestReplaceWithRetryPreservesTargetUntilReplacement(t *testing.T) {
 	dir := t.TempDir()
-	current := filepath.Join(dir, "AUCCAgent.exe")
+	current := filepath.Join(dir, "LabAccessAgent.exe")
 	staged := filepath.Join(dir, "staged.exe")
 	if err := os.WriteFile(current, []byte("old"), 0600); err != nil {
 		t.Fatal(err)
@@ -32,7 +32,7 @@ func TestReplaceWithRetryPreservesTargetUntilReplacement(t *testing.T) {
 
 func TestFailedNewAgentRestoresOldVersion(t *testing.T) {
 	dir := t.TempDir()
-	current := filepath.Join(dir, "AUCCAgent.exe")
+	current := filepath.Join(dir, "LabAccessAgent.exe")
 	staged := filepath.Join(dir, "staged.exe")
 	buildStubAgent(t, current, "0.1.0")
 	buildStubAgent(t, staged, "0.2.0")
@@ -41,7 +41,9 @@ func TestFailedNewAgentRestoresOldVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	digest := sha256.Sum256(content)
-	if err := replaceAgent(current, staged, "0.2.0", hex.EncodeToString(digest[:])); err == nil {
+	err = replaceAgent(current, staged, "0.2.0", hex.EncodeToString(digest[:]))
+	t.Logf("replaceAgent: %v", err)
+	if err == nil {
 		t.Fatal("expected fast-exiting new Agent to trigger rollback")
 	}
 	output, err := exec.Command(current, "--version").Output()
@@ -52,11 +54,11 @@ func TestFailedNewAgentRestoresOldVersion(t *testing.T) {
 
 func TestVersionPreflightTimesOutWithoutReplacingInstalledAgent(t *testing.T) {
 	dir := t.TempDir()
-	current := filepath.Join(dir, "AUCCAgent.exe")
+	current := filepath.Join(dir, "LabAccessAgent.exe")
 	staged := filepath.Join(dir, "staged.exe")
 	buildStubAgent(t, current, "0.1.0")
 	buildStubAgent(t, staged, "0.2.0")
-	t.Setenv("AUCC_TEST_HANG_VERSION", "0.2.0")
+	t.Setenv("LABACCESS_TEST_HANG_VERSION", "0.2.0")
 	digest, err := fileSHA256(staged)
 	if err != nil {
 		t.Fatal(err)
@@ -77,7 +79,7 @@ func TestVersionPreflightTimesOutWithoutReplacingInstalledAgent(t *testing.T) {
 func buildStubAgent(t *testing.T, output, version string) {
 	t.Helper()
 	source := filepath.Join(filepath.Dir(output), version+".go")
-	code := "package main\nimport (\"fmt\";\"os\";\"time\")\nfunc main(){if len(os.Args)>1 && os.Args[1]==\"--version\" {if os.Getenv(\"AUCC_TEST_HANG_VERSION\")==\"" + version + "\" {time.Sleep(time.Minute)};fmt.Print(\"" + version + "\")}}"
+	code := "package main\nimport (\"fmt\";\"os\";\"time\")\nfunc main(){if len(os.Args)>1 && os.Args[1]==\"--version\" {if os.Getenv(\"LABACCESS_TEST_HANG_VERSION\")==\"" + version + "\" {time.Sleep(time.Minute)};fmt.Print(\"" + version + "\")}}"
 	if err := os.WriteFile(source, []byte(code), 0600); err != nil {
 		t.Fatal(err)
 	}

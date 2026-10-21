@@ -1,5 +1,0 @@
-{
-  "server_url": "wss://backend.example.invalid/api/ws/agent",
-  "ping_interval_seconds": 15,
-  "auto_enroll": true
-}

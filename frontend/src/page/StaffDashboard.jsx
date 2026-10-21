@@ -3,11 +3,10 @@ import { useAuth } from '../App';
 import StaffStationManagement from './StaffStationManagement';
 import StaffSessionControl from './StaffSessionControl';
 import StaffDailyReport from './StaffDailyReport';
+import BrandName from '../BrandName';
 
 // --- CSS Styles (Glassmorphism & Custom Scrollbar) ---
 const styles = `
-  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
-  @import url('https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap');
 
   body {
     font-family: 'Inter', sans-serif;
@@ -71,7 +70,7 @@ function StaffDashboard() {
                             <div className="w-8 h-8 bg-[#7c3aed] rounded-lg flex items-center justify-center text-white shadow-lg shadow-purple-200">
                                 <span className="material-symbols-outlined text-lg">monitor_heart</span>
                             </div>
-                            <span className="font-extrabold text-lg tracking-tight">Staff<span className="text-[#7c3aed]">Hub</span></span>
+                            <BrandName role="Staff" />
                         </div>
                     </div>
 

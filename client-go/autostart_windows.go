@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"golang.org/x/sys/windows/registry"
 )
@@ -18,11 +17,8 @@ func ensureAgentAutoStart() error {
 		return err
 	}
 	defer key.Close()
-	if err := key.SetStringValue("AUCC Agent", fmt.Sprintf(`"%s"`, executable)); err != nil {
+	if err := key.SetStringValue("LabAccess Agent", fmt.Sprintf(`"%s"`, executable)); err != nil {
 		return err
-	}
-	if appData := os.Getenv("APPDATA"); appData != "" {
-		_ = os.Remove(filepath.Join(appData, `Microsoft\Windows\Start Menu\Programs\Startup\AUCC Agent.lnk`))
 	}
 	return nil
 }

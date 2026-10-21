@@ -3,11 +3,10 @@ import { useNavigate } from 'react-router-dom';
 // ✅ Import useAuth เพื่อดึงข้อมูล User ที่ Login เข้ามา
 import { useAuth } from '../App';
 import { apiFetch } from '../api';
+import BrandName from '../BrandName';
 
 // --- CSS Styles ---
 const styles = `
-  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;900&display=swap');
-  @import url('https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap');
 
   body {
     font-family: 'Inter', sans-serif;
@@ -190,7 +189,7 @@ function StudentDashboard() {
                         <div className="w-8 h-8 bg-primary rounded-lg flex items-center justify-center">
                             <span className="material-symbols-outlined text-white text-xl">computer</span>
                         </div>
-                        <span className="font-bold text-xl tracking-tight text-slate-800">User<span className="text-primary">Space</span></span>
+                        <BrandName role="Student" />
                     </div>
 
                     <div className="flex items-center gap-4">

@@ -238,9 +238,12 @@ func main() {
 		if _, err := os.Stat(index); err != nil {
 			log.Fatalf("[Frontend] Cannot read %s: %v", index, err)
 		}
-		r.Static("/assets", filepath.Join(cfg.FrontendDistDir, "assets"))
+		// Vite fingerprints asset names, so they never change in place.
+		r.Group("/assets", func(c *gin.Context) {
+			c.Header("Cache-Control", "public, max-age=31536000, immutable")
+		}).Static("/", filepath.Join(cfg.FrontendDistDir, "assets"))
 		r.GET("/", func(c *gin.Context) {
-			c.Header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' wss:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
+			c.Header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self' wss:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
 			c.File(index)
 		})
 	}

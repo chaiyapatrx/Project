@@ -18,7 +18,7 @@ assert.equal(passwordByteLength('legacy123') <= 72, true, 'Existing shorter pass
 let expiredSessions = 0;
 globalThis.window = {
   location: { hostname: 'lab.example', protocol: 'https:', origin: 'https://lab.example' },
-  dispatchEvent: event => { if (event.type === 'aucc:session-expired') expiredSessions += 1; },
+  dispatchEvent: event => { if (event.type === 'labaccess:session-expired') expiredSessions += 1; },
 };
 globalThis.localStorage = { getItem() { throw new Error('Storage denied'); } };
 globalThis.document = { cookie: 'csrf_token=current-cookie-token' };

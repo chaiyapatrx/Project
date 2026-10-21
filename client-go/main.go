@@ -28,6 +28,7 @@ import (
 	"unsafe"
 
 	"github.com/gorilla/websocket"
+	"golang.org/x/sys/windows"
 )
 
 type Config struct {
@@ -38,7 +39,9 @@ type Config struct {
 	AgentSecret         string `json:"agent_secret"`
 	AutoEnroll          bool   `json:"auto_enroll"`
 	EnrollmentToken     string `json:"enrollment_token,omitempty"`
+	HWID                string `json:"hwid,omitempty"`
 	enrollmentApproved  bool
+	path                string
 }
 
 var agentVersion = "1.0.0"
@@ -246,7 +249,7 @@ func main() {
 		return
 	}
 	log.Println("==================================================")
-	log.Println(" AUCC High-Performance Client Agent (Go)")
+	log.Println(" Computer Access System - station Agent")
 	log.Println("==================================================")
 	if len(os.Args) > 1 && os.Args[1] == "--enroll" {
 		cfg, err := loadConfig()
@@ -254,11 +257,17 @@ func main() {
 			log.Printf("[Agent] Enrollment setup failed: %v", err)
 			return
 		}
-		if err := enrollAgent(context.Background(), cfg, getHWID()); err != nil {
+		if err := enrollAgent(context.Background(), cfg, stationHardwareID(cfg)); err != nil {
 			log.Printf("[Agent] Enrollment will retry when the agent starts: %v", err)
 		}
 		return
 	}
+	instance, ok := acquireSingleInstance(20 * time.Second)
+	if !ok {
+		log.Println("[Agent] Another Agent is already running in this Windows session.")
+		return
+	}
+	defer windows.CloseHandle(instance)
 	if err := ensureAgentAutoStart(); err != nil {
 		log.Printf("[Agent] Could not repair Windows auto-start: %v", err)
 	}
@@ -276,7 +285,7 @@ func main() {
 	if strings.TrimSpace(cfg.AgentSecret) == "" || strings.TrimSpace(cfg.MachineName) == "" {
 		log.Fatal("[Agent] config.json must contain machine_name and agent_secret, or enable auto_enroll")
 	}
-	hwid := getHWID()
+	hwid := stationHardwareID(cfg)
 	stationAgentConfig = cfg
 	stationHWID = hwid
 
@@ -544,7 +553,7 @@ func handleServerCommand(cmd CommandMessage) {
 		if text, ok := cmd.Data["message"].(string); ok && text != "" {
 			msg = text
 		}
-		showWindowsAlert("Station Management Notice", msg)
+		showWindowsAlert("ระบบเข้าใช้งานคอมพิวเตอร์", msg)
 	default:
 		log.Printf("[Command] Unknown action: %s", cmd.Action)
 	}
@@ -558,7 +567,7 @@ func startNativeStationLockOverlay() error {
 
 func runStationLockOverlay(ready chan<- error) {
 	runtime.LockOSThread()
-	className, _ := syscall.UTF16PtrFromString("AUCCStationLockOverlay")
+	className, _ := syscall.UTF16PtrFromString("LabAccessStationLockOverlay")
 	windowTitle, _ := syscall.UTF16PtrFromString("Station locked")
 	stationLockOverlayProc = syscall.NewCallback(stationLockOverlayWindowProc)
 
@@ -736,7 +745,7 @@ func paintStationLogin(dc uintptr, width, height int32) {
 	stationRoundRect(dc, stationLockRect{x, y, x + cardWidth, y + cardHeight}, 44, stationRGB(255, 255, 255))
 	if leftWidth == 0 {
 		stationRoundRect(dc, stationLockRect{x + 30, y + 24, x + 92, y + 62}, 14, stationRGB(124, 58, 237))
-		stationDrawText(dc, "AUCC", stationLockRect{x + 37, y + 29, x + 85, y + 58}, stationLabelFont, stationRGB(255, 255, 255), dtCenter|dtVCenter|dtSingleLine)
+		stationDrawText(dc, "PC", stationLockRect{x + 37, y + 29, x + 85, y + 58}, stationLabelFont, stationRGB(255, 255, 255), dtCenter|dtVCenter|dtSingleLine)
 	} else {
 		stationRoundRect(dc, stationLockRect{x, y, x + leftWidth + 24, y + cardHeight}, 44, stationRGB(76, 29, 149))
 		stationEllipse(dc, stationLockRect{x + leftWidth - 230, y, x + leftWidth + 20, y + 250}, stationRGB(124, 58, 237))
@@ -798,7 +807,7 @@ func createStationAuthControls(parent uintptr, width, height int32, instance uin
 	}
 
 	var err error
-	stationTitleControl, err = createStationControl(parent, instance, "STATIC", "AUCC Station Login", wsChild|wsVisible, 0, 0, inputX, titleY, inputWidth, 52)
+	stationTitleControl, err = createStationControl(parent, instance, "STATIC", "Station Login", wsChild|wsVisible, 0, 0, inputX, titleY, inputWidth, 52)
 	if err != nil {
 		return err
 	}
@@ -1353,6 +1362,20 @@ func showWindowsAlert(title, message string) {
 	}
 }
 
+// stationHardwareID keeps the ID the server registered. Older configs did not
+// store it, so their MAC-based ID is saved once to stop it drifting when
+// network adapters change.
+func stationHardwareID(cfg *Config) string {
+	if cfg.HWID != "" {
+		return cfg.HWID
+	}
+	cfg.HWID = getHWID()
+	if err := saveStationConfig(cfg, cfg.path); err != nil {
+		log.Printf("[Agent] Could not save hardware ID: %v", err)
+	}
+	return cfg.HWID
+}
+
 func getHWID() string {
 	// Derive stable HWID from first physical non-loopback MAC address
 	interfaces, err := net.Interfaces()
@@ -1386,7 +1409,7 @@ func loadConfig() (*Config, error) {
 
 	var paths []string
 	if localAppData := os.Getenv("LOCALAPPDATA"); localAppData != "" {
-		paths = append(paths, filepath.Join(localAppData, "AUCC Agent", "config.json"))
+		paths = append(paths, filepath.Join(localAppData, "LabAccess Agent", "config.json"))
 	}
 	if exePath, err := os.Executable(); err == nil {
 		paths = append(paths, filepath.Join(filepath.Dir(exePath), "config.json"))
@@ -1407,6 +1430,7 @@ func loadConfig() (*Config, error) {
 		if err := json.Unmarshal(data, cfg); err != nil {
 			return nil, fmt.Errorf("parse %s: %w", configPath, err)
 		}
+		cfg.path = configPath
 		if cfg.ServerCAFile == "" {
 			if exePath, err := os.Executable(); err == nil {
 				caPath := filepath.Join(filepath.Dir(exePath), "server-ca.pem")
@@ -1427,6 +1451,9 @@ func loadConfig() (*Config, error) {
 		cfg.AutoEnroll = true
 		return completeAutoEnrollmentConfig(cfg, configPath)
 	}
+	if cfg.path == "" {
+		cfg.path = configPath
+	}
 	return cfg, nil
 }
 
@@ -1446,31 +1473,42 @@ func completeAutoEnrollmentConfig(cfg *Config, path string) (*Config, error) {
 		return nil, fmt.Errorf("generate station credential: %w", err)
 	}
 	cfg.AgentSecret = base64.RawURLEncoding.EncodeToString(secret)
+	if cfg.HWID == "" {
+		cfg.HWID = getHWID()
+	}
+	cfg.path = path
+	if err := saveStationConfig(cfg, path); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+func saveStationConfig(cfg *Config, path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return nil, fmt.Errorf("create station settings folder: %w", err)
+		return fmt.Errorf("create station settings folder: %w", err)
 	}
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
-		return nil, err
+		return err
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), "config-*.tmp")
 	if err != nil {
-		return nil, fmt.Errorf("create station settings: %w", err)
+		return fmt.Errorf("create station settings: %w", err)
 	}
 	defer os.Remove(tmp.Name())
 	if err := protectStationConfig(tmp.Name()); err != nil {
 		_ = tmp.Close()
-		return nil, err
+		return err
 	}
 	if _, err := tmp.Write(data); err != nil {
 		_ = tmp.Close()
-		return nil, err
+		return err
 	}
 	if err := tmp.Close(); err != nil {
-		return nil, err
+		return err
 	}
 	if err := os.Rename(tmp.Name(), path); err != nil {
-		return nil, fmt.Errorf("save station settings: %w", err)
+		return fmt.Errorf("save station settings: %w", err)
 	}
-	return cfg, nil
+	return nil
 }

@@ -3,6 +3,7 @@ import { useAuth } from '../App';
 import { apiFetch } from '../api';
 import { useMonitorWebSocket } from '../useMonitorWebSocket';
 import AgentUpdates from './AgentUpdates';
+import { APP_NAME } from '../brand';
 
 const Toast = ({ message, type, onClose }) => {
     useEffect(() => { const timer = setTimeout(onClose, 3000); return () => clearTimeout(timer); }, [onClose]);
@@ -318,7 +319,7 @@ function StaffStationManagement() {
                         )}
 
                         <p className="text-[10px] text-slate-400 text-center mt-6 font-bold uppercase tracking-widest">
-                            Innovation Hub Management System
+                            {APP_NAME}
                         </p>
                     </div>
                 </div>

@@ -1,24 +1,26 @@
-# ติดตั้ง AUCC แบบอัตโนมัติบน Windows
+# ตัวติดตั้งระบบเข้าใช้งานคอมพิวเตอร์ (สำหรับผู้พัฒนา)
+
+วิธีติดตั้งสำหรับผู้ใช้ทั่วไปอยู่ใน [README หลัก](../README.md)
 
 ## ผู้ติดตั้งใช้งาน
 
-1. นำ `dist/AUCCServerSetup-<VERSION>.exe` ไปเครื่องแม่ เปิดแล้วกดติดตั้ง อนุญาต UAC ของ Windows
+1. นำ `dist/LabAccessServerSetup-<VERSION>.exe` ไปเครื่องแม่ เปิดแล้วกดติดตั้ง อนุญาต UAC ของ Windows
 2. Setup เตรียม MariaDB ส่วนตัวบน loopback พอร์ต 3308, schema, บัญชี Admin พร้อมรหัสสุ่ม, HTTPS, firewall เฉพาะ backend/LocalSubnet และ Scheduled Task ที่เริ่มหลังเปิดเครื่องก่อน sign in ไม่ต้องมี XAMPP, Go, Node, Python หรืออินเทอร์เน็ตบนเครื่องแม่
 3. หน้าสุดท้ายเปิดข้อมูลล็อกอินและเว็บไซต์ เปลี่ยนรหัส Admin หลังเข้าใช้ครั้งแรก
-4. คัดลอก `%ProgramData%\AUCC Server\AUCCClientSetup.exe` ไปเครื่องลูก เปิดและกดติดตั้งด้วยบัญชี Windows ที่จะใช้ Agent ไม่ต้องกรอก URL, CA หรือ credential
-5. Agent เริ่มหลังติดตั้งและหลังบัญชี Windows นี้ sign in เครื่องใหม่จากชุดติดตั้งส่วนตัวได้รับอนุมัติอัตโนมัติ แต่ยังต้องล็อกอิน AUCC หรือกรอก Access Code ก่อนใช้เครื่อง
+4. คัดลอก `%ProgramData%\LabAccess Server\LabAccessClientSetup.exe` ไปเครื่องลูก เปิดและกดติดตั้งด้วยบัญชี Windows ที่จะใช้ Agent ไม่ต้องกรอก URL, CA หรือ credential
+5. Agent เริ่มหลังติดตั้งและหลังบัญชี Windows นี้ sign in เครื่องใหม่จากชุดติดตั้งส่วนตัวได้รับอนุมัติอัตโนมัติ แต่ยังต้องล็อกอินด้วยบัญชีของระบบหรือกรอก Access Code ก่อนใช้เครื่อง
 
-เครื่องแม่ใช้ชื่อคอมพิวเตอร์ Windows เป็นปลายทาง ไม่แก้ IP, DNS, router หรือชื่อเครื่องโดยพลการ ทุกเครื่องต้องอยู่เครือข่ายที่เข้าถึงและ resolve ชื่อเครื่องแม่ได้; เครือข่ายที่แยก client/VLAN หรือปิด name resolution ต้องให้ผู้ดูแลเครือข่ายจัดการก่อน ไม่มีตัวติดตั้งที่ข้ามข้อจำกัดเครือข่ายหรือ UAC ได้
+Client Setup ลองต่อเครื่องแม่ด้วยชื่อคอมพิวเตอร์ก่อน ถ้าไม่ได้จะลอง IPv4 ของเครื่องแม่ที่บันทึกไว้ตอนติดตั้ง Server (`AlternateURLs` ใน `deployment.ini`) ใบรับรอง HTTPS และ `ALLOWED_ORIGINS` ครอบคลุม IP เหล่านั้นด้วย ถ้า IP เครื่องแม่เปลี่ยนหลังติดตั้ง ต้องให้เครื่องลูกหาเครื่องแม่ด้วยชื่อได้ เครือข่ายที่แยก VLAN หรือบล็อกพอร์ต 8000 ต้องให้ผู้ดูแลเครือข่ายจัดการก่อน
 
-ข้อมูลทั้งหมดอยู่ใน `%ProgramData%\AUCC Server` จำกัดสิทธิ์เฉพาะบัญชีผู้ติดตั้ง, Administrators และ SYSTEM หากติดตั้ง Server ด้วยบัญชีผู้ดูแลอีกบัญชี ข้อมูลล็อกอินอยู่ในโฟลเดอร์ของ Server ให้บัญชีนั้นเปิด
+ข้อมูลทั้งหมดอยู่ใน `%ProgramData%\LabAccess Server` จำกัดสิทธิ์เฉพาะบัญชีผู้ติดตั้ง, Administrators และ SYSTEM หากติดตั้ง Server ด้วยบัญชีผู้ดูแลอีกบัญชี ข้อมูลล็อกอินอยู่ในโฟลเดอร์ของ Server ให้บัญชีนั้นเปิด
 
 ## ชุดติดตั้ง Client เป็นข้อมูลส่วนตัว
 
-`AUCCClientSetup.exe` รวม URL, public CA และกุญแจลงทะเบียนเฉพาะ deployment ผู้ครอบครองสามารถเพิ่มสถานีใหม่ได้ แจกเฉพาะผู้ดูแล/เครื่องที่อนุญาต ไม่วางบนเว็บไซต์สาธารณะ ไม่รวมรหัส Admin, DB, JWT หรือ TLS private key เครื่องใหม่ยังมี credential แยกต่อเครื่อง; กุญแจชุดติดตั้งไม่สามารถยึดชื่อเครื่องเดิมหรือเปิดสถานีที่ถูกปิดได้
+`LabAccessClientSetup.exe` รวม URL, public CA และกุญแจลงทะเบียนเฉพาะ deployment ผู้ครอบครองสามารถเพิ่มสถานีใหม่ได้ แจกเฉพาะผู้ดูแล/เครื่องที่อนุญาต ไม่วางบนเว็บไซต์สาธารณะ ไม่รวมรหัส Admin, DB, JWT หรือ TLS private key เครื่องใหม่ยังมี credential แยกต่อเครื่อง; กุญแจชุดติดตั้งไม่สามารถยึดชื่อเครื่องเดิมหรือเปิดสถานีที่ถูกลบได้ สถานีที่ถูกลบแล้วลง Agent ใหม่จะกลับมาเป็น "รออนุมัติ" ให้ Admin กดอนุมัติเท่านั้น
 
-การติดตั้ง Client นี้เพิ่ม public CA ของ AUCC ลง Windows CurrentUser Root เพื่อให้เว็บเชื่อถือ certificate เฉพาะบัญชีที่ติดตั้ง ส่วน Agent ใช้ CA file ของตัวเอง ไม่มีการปิด TLS verification ใบรับรอง server อายุ 5 ปี CA อายุ 10 ปี ต้องวางแผนเปลี่ยน certificate/กระจายชุดติดตั้งใหม่ก่อนหมดอายุ
+การติดตั้ง Client นี้เพิ่ม public CA ของ LabAccess ลง Windows CurrentUser Root เพื่อให้เว็บเชื่อถือ certificate เฉพาะบัญชีที่ติดตั้ง ส่วน Agent ใช้ CA file ของตัวเอง ไม่มีการปิด TLS verification ใบรับรอง server อายุ 5 ปี CA อายุ 10 ปี ต้องวางแผนเปลี่ยน certificate/กระจายชุดติดตั้งใหม่ก่อนหมดอายุ
 
-หากกุญแจชุดติดตั้งรั่ว ปิดการอนุมัติอัตโนมัติโดยลบ `AGENT_ENROLLMENT_TOKEN` จาก `.env` แล้วรัน `scripts/install-server.ps1 -Mode Stop` แบบผู้ดูแล ตามด้วย `Start-ScheduledTask -TaskName 'AUCC Server'` เครื่องที่ลงทะเบียนแล้วใช้ credential เดิมได้ การเปลี่ยนกุญแจต้องเปลี่ยน `client-package/deployment.ini` ให้ตรงแล้วรัน `scripts/install-server.ps1 -Mode Export` แบบผู้ดูแลเพื่อสร้างชุดใหม่
+หากกุญแจชุดติดตั้งรั่ว ปิดการอนุมัติอัตโนมัติโดยลบ `AGENT_ENROLLMENT_TOKEN` จาก `.env` แล้วรัน `scripts/install-server.ps1 -Mode Stop` แบบผู้ดูแล ตามด้วย `Start-ScheduledTask -TaskName 'LabAccess Server'` เครื่องที่ลงทะเบียนแล้วใช้ credential เดิมได้ การเปลี่ยนกุญแจต้องเปลี่ยน `client-package/deployment.ini` ให้ตรงแล้วรัน `scripts/install-server.ps1 -Mode Export` แบบผู้ดูแลเพื่อสร้างชุดใหม่
 
 ## Build โดยผู้พัฒนา
 
@@ -31,6 +33,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File installer/build.ps1
 สคริปต์ build เว็บ, backend, helper และ Agent; ดาวน์โหลด MariaDB 11.4.11 และ Python 3.13.16 จากผู้ผลิต ตรวจ SHA-256 ที่ pin ไว้ และรวม PyMySQL ตาม `migrations/requirements.txt` กับ license ของ runtime ลง Setup การติดตั้งที่ปลายทางทำงาน offline โดยใช้ migration runner เดิม ไฟล์ build/cache ถูก ignore ใน Git
 
 แหล่ง runtime: [MariaDB ZIP](https://mariadb.com/docs/server/server-management/install-and-upgrade-mariadb/installing-mariadb/binary-packages/installing-mariadb-windows-zip-packages), [Python embeddable](https://www.python.org/downloads/release/python-31316/), [Inno Setup](https://jrsoftware.org/). รวม compiler ของ Inno Setup และ license เดิมไว้ใน payload เพื่อสร้าง Client Setup บนเครื่องแม่แบบ offline โดยใช้ template Agent เดิม
+
+## สำรองข้อมูล
+
+Scheduled Task สำรองฐานข้อมูลวันละครั้งไปที่ `backupsucc_<วันเวลา>.sql` เก็บ 30 ไฟล์ล่าสุด และมีทางลัด **สำรองข้อมูลตอนนี้** ใน Start menu (`install-server.ps1 -Mode Backup`) ใช้ `mariadb-dump --single-transaction` ด้วยไฟล์ options ชั่วคราวที่จำกัดสิทธิ์ ไม่ส่งรหัสผ่านทาง command line ผลผิดพลาดอยู่ใน `backup.log` ไฟล์สำรองอยู่บนดิสก์เดียวกับระบบ ควรคัดลอกออกไปเก็บที่อื่นเป็นระยะ
 
 ## ลงซ้ำและถอนการติดตั้ง
 
@@ -46,7 +52,8 @@ Client ที่มี config เดิมจะรักษา credential; ช�
 
 ```powershell
 installer/dist/payload/python/python.exe scripts/test-installer.py
-powershell -NoProfile -File scripts/test-operations.ps1
 ```
 
-Smoke test ใช้ DB/process/โฟลเดอร์ชั่วคราวแยก ตรวจ migration ซ้ำ, HTTPS ที่ตรวจ CA, เว็บ, บัญชี Admin, auto-enrollment, token ผิด, ชื่อเครื่องชน, สถานีถูกปิด, repair และ compiler ที่สร้าง Client Setup จริง ไม่แก้ trust store, firewall หรือ Scheduled Task ของเครื่องทดสอบ ยังต้องทดสอบ GUI Setup, UAC, reboot และ Client บน Windows VM/เครื่องจริงก่อนกระจาย
+ตอน build ถ้า Inno Setup ไม่ได้อยู่ในโฟลเดอร์มาตรฐาน ให้ใส่โฟลเดอร์ที่มี `ISCC.exe` ไว้ใน `PATH`
+
+Smoke test ใช้ DB/process/โฟลเดอร์ชั่วคราวแยก ตรวจ migration ซ้ำ, HTTPS ที่ตรวจ CA, เว็บ, บัญชี Admin, auto-enrollment, token ผิด, ชื่อเครื่องชน, สถานีที่ถูกลบกลับมาเป็นรออนุมัติ, สำรองข้อมูล, repair และ compiler ที่สร้าง Client Setup จริง ไม่แก้ trust store, firewall หรือ Scheduled Task ของเครื่องทดสอบ ยังต้องทดสอบ GUI Setup, UAC, reboot และ Client บน Windows VM/เครื่องจริงก่อนกระจาย

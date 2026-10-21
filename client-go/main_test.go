@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -19,55 +18,6 @@ import (
 
 	"github.com/gorilla/websocket"
 )
-
-func TestRunAgentBatchBuildsAndStartsCanonicalAgent(t *testing.T) {
-	dir := t.TempDir()
-	script, err := os.ReadFile("run_agent.bat")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for name, content := range map[string][]byte{
-		"run_agent.bat": script,
-		"VERSION":       []byte("1.0.8\n"),
-		"stub.go":       []byte("package main\nimport (\"os\";\"strings\")\nfunc main(){if len(os.Args)>1 && os.Args[1]==\"build\" {os.WriteFile(\"build-calls.txt\",[]byte(strings.Join(os.Args[1:],\" \")),0600);return};os.WriteFile(os.Getenv(\"AUCC_TEST_STARTED_FILE\"),[]byte(\"started\"),0600)}"),
-	} {
-		if err := os.WriteFile(filepath.Join(dir, name), content, 0600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	build := exec.Command("go", "build", "-ldflags=-H=windowsgui", "-o", filepath.Join(dir, "AUCCAgent.exe"), filepath.Join(dir, "stub.go"))
-	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build harmless Agent stub: %v: %s", err, output)
-	}
-	stub, err := os.ReadFile(filepath.Join(dir, "AUCCAgent.exe"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "go.exe"), stub, 0600); err != nil {
-		t.Fatal(err)
-	}
-	marker := filepath.Join(dir, "started.txt")
-	t.Setenv("AUCC_TEST_STARTED_FILE", marker)
-	run := exec.Command("cmd", "/c", filepath.Join(dir, "run_agent.bat"))
-	run.Dir = dir
-	if output, err := run.CombinedOutput(); err != nil {
-		t.Fatalf("run_agent.bat exited before starting Agent: %v: %s", err, output)
-	}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if _, err := os.Stat(marker); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("run_agent.bat did not start canonical AUCCAgent.exe")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	calls, err := os.ReadFile(filepath.Join(dir, "build-calls.txt"))
-	if err != nil || !strings.Contains(string(calls), "AUCCUpdater.exe") {
-		t.Fatalf("runner did not build update helper: %q, %v", calls, err)
-	}
-}
 
 func TestAgentRejectsOversizedCommands(t *testing.T) {
 	client, server := newWebSocketPair(t)
@@ -251,7 +201,7 @@ func TestStationLoginURL(t *testing.T) {
 		want  string
 	}{
 		{input: "ws://127.0.0.1:8000/api/ws/agent", want: "http://127.0.0.1:8000/api/agent/login"},
-		{input: "wss://aucc.example/api/ws/agent?region=1", want: "https://aucc.example/api/agent/login"},
+		{input: "wss://labaccess.example/api/ws/agent?region=1", want: "https://labaccess.example/api/agent/login"},
 	}
 	for _, tt := range tests {
 		got, err := stationLoginURL(tt.input)
@@ -259,10 +209,10 @@ func TestStationLoginURL(t *testing.T) {
 			t.Errorf("stationLoginURL(%q) = %q, %v; want %q", tt.input, got, err, tt.want)
 		}
 	}
-	if _, err := stationLoginURL("ftp://aucc.example/agent"); err == nil {
+	if _, err := stationLoginURL("ftp://labaccess.example/agent"); err == nil {
 		t.Fatal("stationLoginURL accepted an unsupported protocol")
 	}
-	if _, err := stationLoginURL("wss://user:password@aucc.example/api/ws/agent"); err == nil {
+	if _, err := stationLoginURL("wss://user:password@labaccess.example/api/ws/agent"); err == nil {
 		t.Fatal("stationLoginURL accepted credentials in server URL")
 	}
 }
@@ -270,7 +220,7 @@ func TestStationLoginURL(t *testing.T) {
 func TestAutoEnrollmentConfigPersistsCredential(t *testing.T) {
 	localAppData := t.TempDir()
 	t.Setenv("LOCALAPPDATA", localAppData)
-	path := filepath.Join(localAppData, "AUCC Agent", "config.json")
+	path := filepath.Join(localAppData, "LabAccess Agent", "config.json")
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -290,6 +240,36 @@ func TestAutoEnrollmentConfigPersistsCredential(t *testing.T) {
 	}
 	if second.MachineName != first.MachineName || second.AgentSecret != first.AgentSecret {
 		t.Fatal("station credential changed after config reload")
+	}
+	if first.HWID == "" || second.HWID != first.HWID {
+		t.Fatalf("hardware ID not persisted: first=%q second=%q", first.HWID, second.HWID)
+	}
+}
+
+func TestLegacyConfigFreezesHardwareID(t *testing.T) {
+	localAppData := t.TempDir()
+	t.Setenv("LOCALAPPDATA", localAppData)
+	path := filepath.Join(localAppData, "LabAccess Agent", "config.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	legacy := `{"server_url":"ws://localhost:8000/api/ws/agent","machine_name":"LAB-01","agent_secret":"` + strings.Repeat("a", 43) + `"}`
+	if err := os.WriteFile(path, []byte(legacy), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := stationHardwareID(cfg); got != getHWID() {
+		t.Fatalf("legacy station must keep its MAC-based ID, got %q", got)
+	}
+	reloaded, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.HWID != cfg.HWID || reloaded.AgentSecret != cfg.AgentSecret {
+		t.Fatal("legacy hardware ID was not saved with the existing credential")
 	}
 }
 

@@ -12,13 +12,21 @@ import (
 
 const maxRateLimitClients = 10000
 
-// Shared by browser and station logins, keyed by canonical database user ID.
-// Per-process throttling can impose a temporary one-minute account lockout;
-// deployments with multiple backends need a shared store or gateway limiter.
-var accountLoginLimiter = NewIPRateLimiter(10, time.Minute)
+// Shared by browser and station logins. Guesses are limited per account and
+// source IP, so another computer cannot lock an administrator out; the
+// account-wide cap still bounds guessing spread over many IPs.
+// shortcut: per-process counters; multiple backends need a shared store.
+var (
+	accountLoginLimiter     = NewIPRateLimiter(10, time.Minute)
+	accountWideLoginLimiter = NewIPRateLimiter(300, time.Minute)
+)
 
 func AccountLoginAllowed(c *gin.Context, userID int) bool {
-	allowed, retryAfter := accountLoginLimiter.Allow(strconv.Itoa(userID))
+	account := strconv.Itoa(userID)
+	allowed, retryAfter := accountLoginLimiter.Allow(account + "|" + c.ClientIP())
+	if allowed {
+		allowed, retryAfter = accountWideLoginLimiter.Allow(account)
+	}
 	if !allowed {
 		RejectRateLimited(c, retryAfter)
 	}

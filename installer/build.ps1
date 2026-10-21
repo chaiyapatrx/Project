@@ -31,8 +31,9 @@ if (Test-Path -LiteralPath $stage) {
 New-Item -ItemType Directory -Path $stage,$cache -Force | Out-Null
 $compiler = @(
     "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe", "$env:LOCALAPPDATA\Programs\Inno Setup 7\ISCC.exe",
-    "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 7\ISCC.exe"
-) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 7\ISCC.exe",
+    (Get-Command ISCC.exe -ErrorAction SilentlyContinue).Source
+) | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
 if (-not $compiler) { throw 'Install Inno Setup 6/7 on the build computer.' }
 $mariaVersion = '11.4.11'
 $mariaZip = Get-VerifiedArchive "https://archive.mariadb.org/mariadb-$mariaVersion/winx64-packages/mariadb-$mariaVersion-winx64.zip" `
@@ -50,8 +51,8 @@ foreach ($dir in @('backend-go','frontend\dist','migrations','scripts','client-t
 Get-ChildItem -LiteralPath (Split-Path $compiler) -File | Where-Object { $_.Name -notlike 'unins*' } | Copy-Item -Destination (Join-Path $stage 'compiler') -Force
 Copy-Item -LiteralPath (Join-Path $project 'client-go\agent_installer.iss'),(Join-Path $project 'client-go\VERSION') -Destination (Join-Path $stage 'client-template') -Force
 Copy-Item -Path (Join-Path $project 'migrations\*.up.sql'),(Join-Path $project 'migrations\apply_migrations.py') -Destination (Join-Path $stage 'migrations') -Force
-Copy-Item -Path (Join-Path $project 'scripts\aucc-common.ps1'),(Join-Path $project 'scripts\install-server.ps1') -Destination (Join-Path $stage 'scripts') -Force
-Copy-Item -LiteralPath (Join-Path $project 'enable-aucc-lan-firewall.ps1') -Destination $stage -Force
+Copy-Item -Path (Join-Path $project 'scripts\labaccess-common.ps1'),(Join-Path $project 'scripts\install-server.ps1') -Destination (Join-Path $stage 'scripts') -Force
+Copy-Item -LiteralPath (Join-Path $project 'enable-labaccess-lan-firewall.ps1') -Destination $stage -Force
 $version = (Get-Content -LiteralPath (Join-Path $project 'client-go\VERSION') -Raw).Trim()
 $savedGo = @($env:GOOS,$env:GOARCH,$env:CGO_ENABLED)
 Push-Location $project
@@ -66,20 +67,20 @@ try {
     } finally { Pop-Location }
     Push-Location 'backend-go'
     try {
-        Invoke-Build 'go' @('build','-trimpath','-o',(Join-Path $stage 'backend-go\AUCCServer.exe'),'./cmd/server')
-        Invoke-Build 'go' @('build','-trimpath','-o',(Join-Path $stage 'backend-go\AUCCProvision.exe'),'./cmd/setup')
+        Invoke-Build 'go' @('build','-trimpath','-o',(Join-Path $stage 'backend-go\LabAccessServer.exe'),'./cmd/server')
+        Invoke-Build 'go' @('build','-trimpath','-o',(Join-Path $stage 'backend-go\LabAccessProvision.exe'),'./cmd/setup')
     } finally { Pop-Location }
     Push-Location 'client-go'
     try {
         New-Item -ItemType Directory -Path 'dist' -Force | Out-Null
-        Invoke-Build 'go' @('build','-trimpath',('-ldflags=-s -w -H=windowsgui -X main.agentVersion=' + $version),'-o','dist\AUCCAgent.exe','.')
-        Invoke-Build 'go' @('build','-trimpath','-ldflags=-s -w -H=windowsgui','-o','dist\AUCCUpdater.exe','./updater')
+        Invoke-Build 'go' @('build','-trimpath',('-ldflags=-s -w -H=windowsgui -X main.agentVersion=' + $version),'-o','dist\LabAccessAgent.exe','.')
+        Invoke-Build 'go' @('build','-trimpath','-ldflags=-s -w -H=windowsgui','-o','dist\LabAccessUpdater.exe','./updater')
         Invoke-Build $compiler @('/Qp',('/DAppVersion=' + $version),'/DDeploymentPackage','agent_installer.iss')
-        Copy-Item -LiteralPath 'dist\AUCCAgent.exe','dist\AUCCUpdater.exe' -Destination (Join-Path $stage 'client-template\dist') -Force
+        Copy-Item -LiteralPath 'dist\LabAccessAgent.exe','dist\LabAccessUpdater.exe' -Destination (Join-Path $stage 'client-template\dist') -Force
     } finally { Pop-Location }
     Invoke-Build $compiler @('/Qp',('/DAppVersion=' + $version),(Join-Path $PSScriptRoot 'server_installer.iss'))
 } finally {
     Pop-Location
     $env:GOOS = $savedGo[0]; $env:GOARCH = $savedGo[1]; $env:CGO_ENABLED = $savedGo[2]
 }
-Write-Output "Ready: $PSScriptRoot\dist\AUCCServerSetup-$version.exe"
+Write-Output "Ready: $PSScriptRoot\dist\LabAccessServerSetup-$version.exe"

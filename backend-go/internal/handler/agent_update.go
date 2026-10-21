@@ -233,6 +233,6 @@ func (h *AgentUpdateHandler) Download(c *gin.Context) {
 		return
 	}
 	c.Header("Content-Type", "application/octet-stream")
-	c.Header("Content-Disposition", "attachment; filename=AUCCAgent.exe")
+	c.Header("Content-Disposition", "attachment; filename=LabAccessAgent.exe")
 	c.File(file)
 }

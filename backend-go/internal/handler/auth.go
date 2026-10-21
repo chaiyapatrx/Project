@@ -421,7 +421,8 @@ func (h *AuthHandler) ChangePassword(c *gin.Context) {
 		return
 	}
 	if !auth.CheckPasswordHash(req.OldPassword, user.PasswordHash) {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Current password is incorrect"})
+		// 400, not 401: the session is still valid; a typo must not sign the user out.
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Current password is incorrect"})
 		return
 	}
 

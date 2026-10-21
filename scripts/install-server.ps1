@@ -1,16 +1,16 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
-    [ValidateSet('Install','Run','Stop','Remove','Export')][string]$Mode = 'Install',
+    [ValidateSet('Install','Run','Stop','Remove','Export','Backup')][string]$Mode = 'Install',
     [string]$Root = (Split-Path $PSScriptRoot),
     [string]$ServerName = $env:COMPUTERNAME
 )
 $ErrorActionPreference = 'Stop'
-. (Join-Path $PSScriptRoot 'aucc-common.ps1')
+. (Join-Path $PSScriptRoot 'labaccess-common.ps1')
 $Root = [IO.Path]::GetFullPath($Root)
 $dbExe = Join-Path $Root 'mariadb\bin\mariadbd.exe'
-$serverExe = Join-Path $Root 'backend-go\AUCCServer.exe'
-$setupExe = Join-Path $Root 'backend-go\AUCCProvision.exe'
-$taskName = 'AUCC Server'
+$serverExe = Join-Path $Root 'backend-go\LabAccessServer.exe'
+$setupExe = Join-Path $Root 'backend-go\LabAccessProvision.exe'
+$taskName = 'LabAccess Server'
 $stopFile = Join-Path $Root 'stop-request'
 
 function Invoke-Setup([string]$Operation) {
@@ -64,7 +64,7 @@ function Start-Backend {
 function Stop-OwnedProcesses {
     $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
     if ($task) {
-        if ($task.Actions.Arguments -notlike ('*"' + $Root + '"*')) { throw 'A different AUCC installation owns the startup task.' }
+        if ($task.Actions.Arguments -notlike ('*"' + $Root + '"*')) { throw 'A different LabAccess installation owns the startup task.' }
     }
     [IO.File]::WriteAllText($stopFile, 'stop')
     try {
@@ -80,11 +80,8 @@ function Stop-OwnedProcesses {
 function Stop-Database {
     $database = Get-Process -Name mariadbd -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $dbExe }
     if (-not $database) { return }
-    $rootPassword = (Get-Content -LiteralPath (Join-Path $Root 'database-admin.txt') -Raw).Trim().Substring('MariaDB root (localhost only): '.Length)
-    $options = Join-Path $Root 'database-shutdown.cnf'
+    $options = New-RootClientOptions 'database-shutdown.cnf'
     try {
-        [IO.File]::WriteAllText($options, "[client]`nuser=root`npassword=$rootPassword`nhost=127.0.0.1`nport=3308`nprotocol=tcp`n", [Text.Encoding]::ASCII)
-        Protect-AuccSecretPath $options
         $admin = Join-Path $Root 'mariadb\bin\mariadb-admin.exe'
         $shutdown = Start-Process -FilePath $admin -ArgumentList ('--defaults-file="' + $options + '"'),'--connect-timeout=5','shutdown' `
             -WindowStyle Hidden -PassThru -RedirectStandardError (Join-Path $Root 'database-shutdown.log')
@@ -96,27 +93,71 @@ function Stop-Database {
     }
 }
 
+# Root credentials go in a private options file, never on the command line.
+function New-RootClientOptions([string]$Name) {
+    $rootPassword = (Get-Content -LiteralPath (Join-Path $Root 'database-admin.txt') -Raw).Trim().Substring('MariaDB root (localhost only): '.Length)
+    $port = (Select-String -LiteralPath (Join-Path $Root 'my.ini') -Pattern '^port=(\d+)').Matches[0].Groups[1].Value
+    $options = Join-Path $Root $Name
+    [IO.File]::WriteAllText($options, "[client]`nuser=root`npassword=$rootPassword`nhost=127.0.0.1`nport=$port`nprotocol=tcp`n", [Text.Encoding]::ASCII)
+    Protect-LabAccessSecretPath $options
+    return $options
+}
+
+function Backup-Database {
+    $dir = Join-Path $Root 'backups'
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    $file = Join-Path $dir ('labaccess_' + (Get-Date -Format 'yyyy-MM-dd_HH-mm-ss') + '.sql')
+    $partial = $file + '.partial'
+    $options = New-RootClientOptions 'database-backup.cnf'
+    try {
+        & (Join-Path $Root 'mariadb\bin\mariadb-dump.exe') ('--defaults-file=' + $options) '--single-transaction' '--quick' '--routines' '--triggers' `
+            '--default-character-set=utf8mb4' ('--result-file=' + $partial) '--databases' 'labaccess' 2>> (Join-Path $Root 'backup.log')
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $partial) -or (Get-Item -LiteralPath $partial).Length -eq 0) { throw 'Database backup failed; see backup.log.' }
+        Move-Item -LiteralPath $partial -Destination $file
+    } finally {
+        Remove-Item -LiteralPath $options,$partial -Force -ErrorAction SilentlyContinue
+    }
+    # Keep the newest 30 backups; older ones are removed only after a new backup succeeded.
+    Get-ChildItem -LiteralPath $dir -File -Filter 'labaccess_*.sql' | Sort-Object LastWriteTime -Descending | Select-Object -Skip 30 | Remove-Item -Force
+    return $file
+}
+
+function Show-Message([string]$Text, [string]$Icon) {
+    if ([Environment]::GetCommandLineArgs() -contains '-NonInteractive') { Write-Output $Text; return }
+    Add-Type -AssemblyName PresentationFramework
+    [void][System.Windows.MessageBox]::Show($Text, 'ระบบเข้าใช้งานคอมพิวเตอร์', 'OK', $Icon)
+}
+
 function Export-Client {
     $package = Join-Path $Root 'client-package'
     Copy-Item -Path (Join-Path $Root 'client-template\*') -Destination $package -Recurse -Force
     $version = (Get-Content -LiteralPath (Join-Path $package 'VERSION') -Raw).Trim()
     $builder = Start-Process -FilePath (Join-Path $Root 'compiler\ISCC.exe') -ArgumentList '/Qp',('/DAppVersion=' + $version),
-        '/DDeploymentPackage','/DEmbeddedDeployment',('/O"' + $Root + '"'),'/FAUCCClientSetup',('"' + (Join-Path $package 'agent_installer.iss') + '"') `
+        '/DDeploymentPackage','/DEmbeddedDeployment',('/O"' + $Root + '"'),'/FLabAccessClientSetup',('"' + (Join-Path $package 'agent_installer.iss') + '"') `
         -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $package 'build.log') -RedirectStandardError (Join-Path $package 'build.err.log')
     $null = $builder.Handle
     if (-not $builder.WaitForExit(180000)) { $builder.Kill(); throw 'Client packaging timed out.' }
-    if ($builder.ExitCode -ne 0 -or -not (Test-Path -LiteralPath (Join-Path $Root 'AUCCClientSetup.exe'))) { throw "Client packaging failed (compiler exit $($builder.ExitCode)); inspect client-package/build.err.log." }
+    if ($builder.ExitCode -ne 0 -or -not (Test-Path -LiteralPath (Join-Path $Root 'LabAccessClientSetup.exe'))) { throw "Client packaging failed (compiler exit $($builder.ExitCode)); inspect client-package/build.err.log." }
 }
 
 try {
     if ($Mode -eq 'Run') {
         Clear-RuntimeOverrides
         # ponytail: one server per Windows host; use services if multiple instances are needed.
+        $lastBackup = Get-ChildItem -LiteralPath (Join-Path $Root 'backups') -File -Filter 'labaccess_*.sql' -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1 -ExpandProperty LastWriteTime
+        if (-not $lastBackup) { $lastBackup = Get-Date }  # first backup one day after installation
         while (-not (Test-Path -LiteralPath $stopFile)) {
             $database = Start-Database
             Wait-Database
             $backend = Start-Backend
-            while (-not $backend.HasExited -and -not $database.HasExited -and -not (Test-Path -LiteralPath $stopFile)) { Start-Sleep -Seconds 2 }
+            while (-not $backend.HasExited -and -not $database.HasExited -and -not (Test-Path -LiteralPath $stopFile)) {
+                if (((Get-Date) - $lastBackup).TotalHours -ge 24) {
+                    $lastBackup = Get-Date
+                    try { Backup-Database | Out-Null } catch { "$(Get-Date -Format s) $_" | Add-Content -LiteralPath (Join-Path $Root 'backup.log') -Encoding UTF8 }
+                }
+                Start-Sleep -Seconds 2
+            }
             if (-not $backend.HasExited) { $backend.Kill(); $backend.WaitForExit() }
             Start-Sleep -Seconds 2
         }
@@ -124,15 +165,18 @@ try {
         Stop-OwnedProcesses
         if ($Mode -eq 'Remove') {
             Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
-            Get-NetFirewallRule -DisplayName 'AUCC HTTPS 8000 LAN' -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+            Get-NetFirewallRule -DisplayName 'LabAccess HTTPS 8000 LAN' -ErrorAction SilentlyContinue | Remove-NetFirewallRule
             # Private data, credentials and certificates are deliberately preserved for recovery.
         }
     } elseif ($Mode -eq 'Export') {
         Export-Client
+    } elseif ($Mode -eq 'Backup') {
+        $file = Backup-Database
+        Show-Message ("สำรองข้อมูลเรียบร้อย`n`nไฟล์อยู่ที่:`n" + $file) 'Information'
     } else {
         $identity = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
         if (-not $identity.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Run Server Setup as administrator.' }
-        Protect-AuccSecretPath $Root
+        Protect-LabAccessSecretPath $Root
         Stop-OwnedProcesses
         foreach ($port in @(8000,3308)) {
             if (Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue) { throw "Port $port is already used by another program." }
@@ -163,13 +207,13 @@ try {
             -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
         Register-ScheduledTask -TaskName $taskName -Action $action -Trigger (New-ScheduledTaskTrigger -AtStartup) `
             -User SYSTEM -RunLevel Highest -Settings $settings -Force | Out-Null
-        & (Join-Path $Root 'enable-aucc-lan-firewall.ps1') -RemoteAddress LocalSubnet -Port 8000 | Out-Null
+        & (Join-Path $Root 'enable-labaccess-lan-firewall.ps1') -RemoteAddress LocalSubnet -Port 8000 | Out-Null
         # Only this backend and its local subnet, including Windows' default Public LAN profile.
-        Get-NetFirewallRule -DisplayName 'AUCC HTTPS 8000 LAN' | Set-NetFirewallRule -Profile Any
-        Get-NetFirewallRule -DisplayName 'AUCC HTTPS 8000 LAN' | Get-NetFirewallApplicationFilter | Set-NetFirewallApplicationFilter -Program $serverExe
+        Get-NetFirewallRule -DisplayName 'LabAccess HTTPS 8000 LAN' | Set-NetFirewallRule -Profile Any
+        Get-NetFirewallRule -DisplayName 'LabAccess HTTPS 8000 LAN' | Get-NetFirewallApplicationFilter | Set-NetFirewallApplicationFilter -Program $serverExe
         Start-ScheduledTask -TaskName $taskName
         Wait-HTTPS
-        Write-Output 'AUCC is ready. Open AUCC.url; copy AUCCClientSetup.exe to the client computers.'
+        Write-Output 'LabAccess is ready. Open LabAccess.url; copy LabAccessClientSetup.exe to the client computers.'
     }
 } catch {
     $failure = $_
@@ -177,6 +221,9 @@ try {
         try { Stop-OwnedProcesses } catch { $_ | Out-String | Add-Content -LiteralPath (Join-Path $Root 'setup.log') -Encoding UTF8 }
     }
     $failure | Out-String | Add-Content -LiteralPath (Join-Path $Root 'setup.log') -Encoding UTF8
+    if ($Mode -eq 'Backup') {
+        Show-Message ("สำรองข้อมูลไม่สำเร็จ ตรวจว่าระบบเปิดอยู่ แล้วลองใหม่`n`n" + $failure) 'Error'
+    }
     Write-Error $failure -ErrorAction Continue
     exit 1
 }

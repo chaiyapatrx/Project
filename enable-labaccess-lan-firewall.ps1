@@ -5,7 +5,7 @@ param(
     [ValidateRange(1,65535)][int]$Port = 8000
 )
 $ErrorActionPreference = 'Stop'
-$ruleName = "AUCC HTTPS $Port LAN"
+$ruleName = "LabAccess HTTPS $Port LAN"
 $rules = Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue
 if ($rules) {
     $rules | Set-NetFirewallRule -Enabled True -Direction Inbound -Action Allow -Profile Private

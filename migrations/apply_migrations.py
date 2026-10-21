@@ -250,7 +250,7 @@ def main():
         conn = pymysql.connect(**db_config, autocommit=False)
         with conn.cursor() as cursor:
             # Connection-scoped lock prevents two deployments applying the same DDL.
-            cursor.execute("SELECT GET_LOCK('aucc_schema_migrations', 30)")
+            cursor.execute("SELECT GET_LOCK('labaccess_schema_migrations', 30)")
             if cursor.fetchone() != (1,):
                 raise RuntimeError("Cannot acquire migration lock")
             apply_migrations(cursor, conn)

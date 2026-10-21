@@ -44,3 +44,17 @@ func TestValidAgentCommand(t *testing.T) {
 		}
 	}
 }
+
+func TestOnlyRemovedStationsReopenForApproval(t *testing.T) {
+	for _, test := range []struct {
+		active, pending, want bool
+	}{
+		{active: false, pending: false, want: true},
+		{active: true, pending: false, want: false},
+		{active: false, pending: true, want: false},
+	} {
+		if got := reopensForApproval(test.active, test.pending); got != test.want {
+			t.Errorf("active=%v pending=%v: got %v", test.active, test.pending, got)
+		}
+	}
+}

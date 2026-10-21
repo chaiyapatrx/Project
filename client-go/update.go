@@ -90,7 +90,7 @@ func failedUpdateSHA() string {
 	if err != nil {
 		return ""
 	}
-	data, err := os.ReadFile(filepath.Join(filepath.Dir(executable), "AUCCAgent-update-failed.txt"))
+	data, err := os.ReadFile(filepath.Join(filepath.Dir(executable), "LabAccessAgent-update-failed.txt"))
 	if err != nil {
 		return ""
 	}
@@ -103,12 +103,12 @@ func downloadAndStartUpdate(ctx context.Context, client *http.Client, cfg *Confi
 		return false, err
 	}
 	installDir := filepath.Dir(executable)
-	if !strings.EqualFold(filepath.Base(executable), "AUCCAgent.exe") {
-		return false, fmt.Errorf("automatic updates require the installed AUCCAgent.exe; rebuild with build_agent.bat or install the setup package")
+	if !strings.EqualFold(filepath.Base(executable), "LabAccessAgent.exe") {
+		return false, fmt.Errorf("automatic updates require the installed LabAccessAgent.exe; install the setup package")
 	}
-	helper := filepath.Join(installDir, "AUCCUpdater.exe")
+	helper := filepath.Join(installDir, "LabAccessUpdater.exe")
 	if _, err := os.Stat(helper); err != nil {
-		return false, fmt.Errorf("AUCCUpdater.exe missing; install the bootstrap version once")
+		return false, fmt.Errorf("LabAccessUpdater.exe missing; install the bootstrap version once")
 	}
 	endpoint, err := stationAPIURL(cfg.ServerURL, "/api/agent/releases/"+release.SHA256+"/file")
 	if err != nil {
@@ -131,7 +131,7 @@ func downloadAndStartUpdate(ctx context.Context, client *http.Client, cfg *Confi
 	if response.StatusCode != http.StatusOK {
 		return false, fmt.Errorf("Agent EXE download returned HTTP %d", response.StatusCode)
 	}
-	temp, err := os.CreateTemp(installDir, "AUCCAgent-update-*.exe")
+	temp, err := os.CreateTemp(installDir, "LabAccessAgent-update-*.exe")
 	if err != nil {
 		return false, fmt.Errorf("cannot stage Agent update: %w", err)
 	}
@@ -151,7 +151,7 @@ func downloadAndStartUpdate(ctx context.Context, client *http.Client, cfg *Confi
 	defer stop()
 	output, err := exec.CommandContext(preflightCtx, temp.Name(), "--version").Output()
 	if err != nil || strings.TrimSpace(string(output)) != release.Version {
-		_ = os.WriteFile(filepath.Join(installDir, "AUCCAgent-update-failed.txt"), []byte(release.SHA256), 0600)
+		_ = os.WriteFile(filepath.Join(installDir, "LabAccessAgent-update-failed.txt"), []byte(release.SHA256), 0600)
 		return false, fmt.Errorf("Agent EXE version check failed")
 	}
 	command := exec.Command(helper, executable, temp.Name(), release.Version, release.SHA256)

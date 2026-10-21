@@ -120,6 +120,23 @@ func (h *ComputerHandler) EnrollAgent(c *gin.Context) {
 		PendingApproval bool           `db:"pending_approval"`
 	}
 	err = h.db.Get(&existing, "SELECT hwid, agent_secret_hash, is_active, pending_approval FROM computers WHERE name = ?", req.Name)
+	if err == nil && reopensForApproval(existing.IsActive, existing.PendingApproval) {
+		// An admin removed this station. A reinstalled Agent may ask to return,
+		// but only an admin can approve it; the installer key never reopens it.
+		result, err := h.db.Exec(`UPDATE computers SET hwid = ?, agent_secret_hash = ?, pending_approval = 1, status = 'disabled'
+			WHERE name = ? AND is_active = 0 AND pending_approval = 0`, req.HWID, auth.HashAgentSecret(req.Secret), req.Name)
+		if err != nil {
+			c.JSON(http.StatusConflict, gin.H{"error": "Station name or hardware ID is already registered"})
+			return
+		}
+		if rows, _ := result.RowsAffected(); rows != 1 {
+			c.JSON(http.StatusConflict, gin.H{"error": "Station enrollment changed; try again"})
+			return
+		}
+		recordAudit(c, h.db, "agent_reenrollment_requested", "computer", "", "Removed station asked to return: "+req.Name)
+		c.JSON(http.StatusAccepted, gin.H{"status": "pending"})
+		return
+	}
 	if err == nil {
 		if !existing.HWID.Valid || existing.HWID.String != req.HWID || !existing.AgentSecretHash.Valid || !auth.VerifyAgentSecret(req.Secret, existing.AgentSecretHash.String) || (!existing.IsActive && !existing.PendingApproval) {
 			c.JSON(http.StatusConflict, gin.H{"error": "Station name or hardware ID is already registered"})
@@ -152,6 +169,10 @@ func (h *ComputerHandler) EnrollAgent(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusAccepted, gin.H{"status": "pending"})
+}
+
+func reopensForApproval(isActive, pendingApproval bool) bool {
+	return !isActive && !pendingApproval
 }
 
 func validEnrollmentToken(expected, supplied string) bool {
@@ -196,10 +217,21 @@ func (h *ComputerHandler) RejectPendingAgent(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid station ID"})
 		return
 	}
-	result, err := h.db.Exec("DELETE FROM computers WHERE id = ? AND pending_approval = 1 AND is_active = 0", id)
+	// Bookings and usage logs cascade on delete, so a returning station with
+	// history goes back to removed instead of being deleted.
+	result, err := h.db.Exec(`DELETE FROM computers WHERE id = ? AND pending_approval = 1 AND is_active = 0
+		AND NOT EXISTS (SELECT 1 FROM bookings WHERE computer_id = ?)
+		AND NOT EXISTS (SELECT 1 FROM usage_logs WHERE computer_id = ?)`, id, id, id)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to reject station"})
 		return
+	}
+	if rows, _ := result.RowsAffected(); rows != 1 {
+		result, err = h.db.Exec("UPDATE computers SET pending_approval = 0 WHERE id = ? AND pending_approval = 1 AND is_active = 0", id)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to reject station"})
+			return
+		}
 	}
 	if rows, _ := result.RowsAffected(); rows != 1 {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Pending station not found"})

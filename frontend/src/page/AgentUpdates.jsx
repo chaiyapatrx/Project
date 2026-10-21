@@ -89,7 +89,7 @@ export default function AgentUpdates() {
     return (
         <section className="bg-white rounded-xl border border-slate-200 p-4 mb-6">
             <h2 className="font-bold text-slate-800">Agent updates</h2>
-            <p className="text-sm text-slate-500 mb-3">Admin uploads AUCCAgent.exe once. Staff or Admin selects a version. Busy stations wait until their session ends; offline stations update after reconnecting.</p>
+            <p className="text-sm text-slate-500 mb-3">Admin uploads LabAccessAgent.exe once. Staff or Admin selects a version. Busy stations wait until their session ends; offline stations update after reconnecting.</p>
             {loadError && <p role="alert" className="text-sm text-rose-600 mb-3">Cannot load Agent updates. Check backend and migration 000007.</p>}
             {message && <p role="status" className="text-sm text-violet-700 mb-3">{message}</p>}
             {user?.role === 'admin' && (
