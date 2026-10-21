@@ -4,6 +4,7 @@ import StaffStationManagement from './StaffStationManagement';
 import StaffSessionControl from './StaffSessionControl';
 import StaffDailyReport from './StaffDailyReport';
 import BrandName from '../BrandName';
+import { initials } from '../format';
 
 // --- CSS Styles (Glassmorphism & Custom Scrollbar) ---
 const styles = `
@@ -65,7 +66,7 @@ function StaffDashboard() {
                 {/* ================= SIDEBAR ================= */}
                 <div className="w-64 bg-white border-r border-slate-100 flex flex-col shrink-0 z-20 shadow-xl shadow-slate-200/50">
                     {/* Logo Area */}
-                    <div className="h-16 flex items-center px-6 border-b border-slate-50">
+                    <div className="min-h-16 py-4 flex items-center px-6 border-b border-slate-50">
                         <div className="flex items-center gap-2 text-slate-800">
                             <div className="w-8 h-8 bg-[#7c3aed] rounded-lg flex items-center justify-center text-white shadow-lg shadow-purple-200">
                                 <span className="material-symbols-outlined text-lg">monitor_heart</span>
@@ -109,13 +110,13 @@ function StaffDashboard() {
                     <div className="p-4 border-t border-slate-100">
                         <div className="bg-slate-50 rounded-xl p-3 flex items-center gap-3">
                             <div className="w-9 h-9 rounded-full bg-white border border-slate-100 flex items-center justify-center text-[#7c3aed] font-bold text-xs shadow-sm uppercase">
-                                {user?.username?.substring(0, 2) || 'ST'}
+                                {initials(user?.full_name || user?.username, 'ST')}
                             </div>
                             <div className="flex-1 min-w-0">
                                 <p className="text-xs font-bold text-slate-800 truncate">{user?.full_name || user?.username || 'Staff Member'}</p>
                                 <p className="text-[10px] text-slate-500 font-medium capitalize truncate">{user?.role || 'Staff'}</p>
                             </div>
-                            <button onClick={logout} className="text-slate-400 hover:text-slate-600 transition-colors">
+                            <button onClick={logout} className="text-slate-400 hover:text-rose-500 transition-colors" title="Logout" aria-label="Logout">
                                 <span className="material-symbols-outlined text-lg">logout</span>
                             </button>
                         </div>

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../App';
 import { apiFetch } from '../api';
+import { EndReasonBadge } from '../ui';
 
 function StaffDailyReport() {
     const { user } = useAuth();
@@ -102,11 +103,7 @@ function StaffDailyReport() {
                                     <td className="p-4 text-slate-500">{log.department || '-'}</td>
                                     <td className="p-4 font-bold text-[#7c3aed]">{log.duration_minutes || 0} mins</td>
                                     <td className="p-4">
-                                        <span className={`px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wider ${
-                                            log.termination_reason === 'normal' ? 'bg-emerald-100 text-emerald-600' : 'bg-slate-100 text-slate-600'
-                                        }`}>
-                                            {log.termination_reason || 'completed'}
-                                        </span>
+                                        <EndReasonBadge reason={log.termination_reason || 'completed'} />
                                     </td>
                                 </tr>
                             ))

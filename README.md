@@ -2,7 +2,7 @@
 
 ระบบสำหรับห้องคอมพิวเตอร์ ผู้ใช้จองและเข้าใช้เครื่องผ่านหน้าเว็บ ผู้ดูแลดูสถานะ ควบคุมเครื่อง และดูประวัติการใช้งานจากเครื่องแม่ได้
 
-**รุ่นปัจจุบัน: 1.1.0** · [ดาวน์โหลดตัวติดตั้งเครื่องแม่](https://github.com/chaiyapatrx/Project/releases/download/v1.1.0/LabAccessServerSetup-1.1.0.exe) · [Release และ SHA-256](https://github.com/chaiyapatrx/Project/releases/tag/v1.1.0)
+**รุ่นปัจจุบัน: 1.2.0** · [ดาวน์โหลดตัวติดตั้งเครื่องแม่](https://github.com/chaiyapatrx/Project/releases/download/v1.2.0/LabAccessServerSetup-1.2.0.exe) · [Release และ SHA-256](https://github.com/chaiyapatrx/Project/releases/tag/v1.2.0)
 
 ## แต่ละส่วนทำอะไร
 
@@ -50,7 +50,7 @@
 
 ### ขั้นที่ 1: ติดตั้งเครื่องแม่ (ทำครั้งเดียว)
 
-1. ดาวน์โหลด [LabAccessServerSetup-1.1.0.exe](https://github.com/chaiyapatrx/Project/releases/download/v1.1.0/LabAccessServerSetup-1.1.0.exe) มาไว้ที่เครื่องแม่
+1. ดาวน์โหลด [LabAccessServerSetup-1.2.0.exe](https://github.com/chaiyapatrx/Project/releases/download/v1.2.0/LabAccessServerSetup-1.2.0.exe) มาไว้ที่เครื่องแม่
 2. ดับเบิลคลิกไฟล์ ถ้า Windows ถามว่า "อนุญาตให้แอปนี้ทำการเปลี่ยนแปลงอุปกรณ์หรือไม่" กด **ใช่**
 3. กด **Next** หรือ **Install** จนเสร็จ แล้วรอสักครู่
 4. ตอนจบจะเปิดไฟล์ชื่อผู้ใช้กับรหัสผ่าน และเปิดเว็บให้เอง ใช้ชื่อกับรหัสนั้นเข้าสู่ระบบ และเก็บไฟล์นั้นเป็นความลับ

@@ -5,6 +5,7 @@ import { toCSV } from '../csv';
 import ExecOverview from './ExecOverview';
 import ExecReports from './ExecReports';
 import BrandName from '../BrandName';
+import { initials } from '../format';
 
 // --- CSS Styles (Glassmorphism & Custom Scrollbar) ---
 const styles = `
@@ -140,13 +141,13 @@ function ExecDashboard() {
                     <div className="p-4 border-t border-slate-100">
                         <div className="bg-slate-50 rounded-xl p-3 flex items-center gap-3">
                             <div className="w-9 h-9 rounded-full bg-white border border-slate-100 flex items-center justify-center text-[#7c3aed] font-bold text-xs shadow-sm uppercase">
-                                {user?.username?.substring(0, 2) || 'EX'}
+                                {initials(user?.full_name || user?.username, 'EX')}
                             </div>
                             <div className="flex-1 min-w-0">
                                 <p className="text-xs font-bold text-slate-800 truncate">{user?.full_name || user?.username || 'Executive User'}</p>
                                 <p className="text-[10px] text-slate-500 font-medium capitalize truncate">ผู้บริหาร (Executive)</p>
                             </div>
-                            <button onClick={logout} className="text-slate-400 hover:text-slate-600 transition-colors">
+                            <button onClick={logout} className="text-slate-400 hover:text-rose-500 transition-colors" title="Logout" aria-label="Logout">
                                 <span className="material-symbols-outlined text-lg">logout</span>
                             </button>
                         </div>

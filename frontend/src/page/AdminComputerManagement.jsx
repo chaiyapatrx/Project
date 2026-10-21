@@ -494,19 +494,36 @@ function AdminComputerManagement() {
                 <AgentUpdates />
 
                 {user?.role === 'admin' && (
-                    <section className="bg-white rounded-xl border border-violet-200 p-4 mb-6">
-                        <h2 className="font-bold text-slate-800 mb-1">Stations waiting for approval ({pendingAgents.length})</h2>
-                        <p className="text-sm text-slate-500 mb-3">Install the client program (LabAccessClientSetup.exe) on the computer. Check its name and hardware ID before approving. A removed station that is installed again also appears here.</p>
-                        {pendingError && <p className="text-sm text-rose-600 mb-2">Could not load pending stations. Check the backend connection and database migration.</p>}
-                        {!pendingError && pendingAgents.length === 0 ? <p className="text-sm text-slate-400">No pending stations</p> : pendingAgents.map(agent => (
-                            <div key={agent.id} className="flex items-center justify-between gap-3 border-t py-3">
-                                <div><strong>{agent.name}</strong><p className="text-xs text-slate-500 font-mono">{agent.hwid}</p></div>
-                                <div className="flex items-center gap-2">
-                                    <button onClick={() => rejectAgent(agent)} className="px-3 py-2 rounded-lg border border-rose-200 text-rose-600 text-sm font-bold hover:bg-rose-50 transition-colors">Reject</button>
-                                    <button onClick={() => approveAgent(agent)} className="px-3 py-2 rounded-lg bg-violet-600 text-white text-sm font-bold hover:bg-violet-700 transition-colors">Approve</button>
-                                </div>
+                    <section className="bg-white rounded-2xl border border-slate-100 shadow-sm p-6 mb-6">
+                        <div className="flex items-start gap-3">
+                            <span className="material-symbols-outlined w-10 h-10 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center" aria-hidden="true">how_to_reg</span>
+                            <div>
+                                <h2 className="font-bold text-slate-800">Stations waiting for approval {pendingAgents.length > 0 && <span className="ml-1 px-2 py-0.5 rounded-full text-xs bg-amber-100 text-amber-700">{pendingAgents.length}</span>}</h2>
+                                <p className="text-sm text-slate-500 max-w-2xl">Install LabAccessClientSetup.exe on the computer, then check its name and hardware ID before approving. A removed station that is installed again also appears here.</p>
                             </div>
-                        ))}
+                        </div>
+                        {pendingError && <p role="alert" className="mt-4 text-sm text-rose-700 bg-rose-50 border border-rose-100 rounded-xl px-3 py-2">Could not load pending stations. Check the server connection.</p>}
+                        {!pendingError && pendingAgents.length === 0 ? (
+                            <p className="mt-4 text-sm text-slate-400">No stations are waiting.</p>
+                        ) : (
+                            <ul className="mt-4 divide-y divide-slate-100 border border-slate-100 rounded-xl overflow-hidden">
+                                {pendingAgents.map(agent => (
+                                    <li key={agent.id} className="flex items-center justify-between gap-3 px-4 py-3">
+                                        <div className="flex items-center gap-3 min-w-0">
+                                            <span className="material-symbols-outlined text-slate-400" aria-hidden="true">desktop_windows</span>
+                                            <div className="min-w-0">
+                                                <p className="font-bold text-slate-800">{agent.name}</p>
+                                                <p className="text-xs text-slate-400 font-mono truncate">{agent.hwid}</p>
+                                            </div>
+                                        </div>
+                                        <div className="flex items-center gap-2 shrink-0">
+                                            <button onClick={() => rejectAgent(agent)} className="px-3 py-1.5 rounded-lg text-sm font-semibold text-rose-600 hover:bg-rose-50 transition-colors">Reject</button>
+                                            <button onClick={() => approveAgent(agent)} className="px-4 py-1.5 rounded-lg bg-[#7c3aed] text-white text-sm font-bold hover:bg-[#6d28d9] shadow-sm transition-colors">Approve</button>
+                                        </div>
+                                    </li>
+                                ))}
+                            </ul>
+                        )}
                     </section>
                 )}
 

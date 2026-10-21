@@ -10,6 +10,7 @@ import AdminDashboard from './page/AdminDashboard';
 import StaffDashboard from './page/StaffDashboard'; // ✅ 1. เพิ่ม Import Staff
 import ExecDashboard from './page/ExecDashboard';
 import BrandName from './BrandName';
+import { DialogProvider, useDialog } from './dialog';
 
 // ==========================================
 // 1. Context จัดการระบบ Login
@@ -20,6 +21,7 @@ export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
+  const dialog = useDialog();
 
   useEffect(() => {
     let active = true;
@@ -92,7 +94,7 @@ export const AuthProvider = ({ children }) => {
   const logout = async () => {
     // Clear the server-side HttpOnly session cookie first, then local state.
     if (!await logoutRequest(user)) {
-      window.alert('Unable to sign out on the server. Check the connection and try again.');
+      await dialog({ title: 'Sign-out failed', message: 'Unable to sign out on the server. Check the connection and try again.', cancelLabel: null });
       return;
     }
     setUser(null);
@@ -182,6 +184,7 @@ const publicStyles = `
 // ==========================================
 const PublicHome = () => {
   const navigate = useNavigate();
+  const dialog = useDialog();
   const { user } = useAuth(); // ดึง UseAuth เข้ามาเช็ค
   const [stations, setStations] = useState([]);
   const [initialLoading, setInitialLoading] = useState(true);
@@ -214,10 +217,8 @@ const PublicHome = () => {
 
   const availableCount = stations.filter(s => s.is_online && s.status === 'available').length;
 
-  const handleBookingAttempt = () => {
-    // ใช้ confirm แบบ browser native ไปก่อน หรือจะทำ Modal สวยๆ ก็ได้
-    // แต่เพื่อให้เหมือน StudentDashboard จะเน้น UI หลัก
-    if (window.confirm("🔒 Restricted Access\nYou must log in to book a station.\n\nProceed to Login?")) {
+  const handleBookingAttempt = async () => {
+    if (await dialog({ title: 'Sign in to book', message: 'You must sign in before booking a station.', confirmLabel: 'Go to sign in' })) {
       navigate('/login');
     }
   };
@@ -259,16 +260,16 @@ const PublicHome = () => {
       </nav>
 
       {/* Main Content */}
-      <main className="max-w-[1600px] mx-auto px-6 py-6 flex gap-6 h-[calc(100vh-64px)]">
+      <main className="max-w-[1600px] mx-auto px-4 sm:px-6 py-6 flex gap-6 h-[calc(100vh-64px)]">
         <div className="flex-1 flex flex-col min-w-0">
 
           {/* Header Section */}
-          <div className="flex items-center justify-between mb-6 shrink-0">
-            <div>
-              <h2 className="text-2xl font-bold text-slate-900">Computer Stations Overview</h2>
+          <div className="flex items-center justify-between gap-3 mb-6 shrink-0">
+            <div className="min-w-0">
+              <h2 className="text-xl sm:text-2xl font-bold text-slate-900">Computer Stations Overview</h2>
               <p className="text-slate-500 text-sm mt-0.5">Live status from every station</p>
             </div>
-            <div className="flex items-center gap-2 px-4 py-2 rounded-full bg-purple-50 border border-purple-100 shadow-sm">
+            <div className="flex items-center gap-2 px-3 sm:px-4 py-2 rounded-full bg-purple-50 border border-purple-100 shadow-sm whitespace-nowrap shrink-0">
               <div className="w-2.5 h-2.5 rounded-full bg-primary animate-pulse"></div>
               <span className={`text-sm font-bold ${stationError ? 'text-rose-600' : 'text-primary'}`}>
                 {stationError ? 'Status unavailable' : `${availableCount} Available`}
@@ -363,6 +364,7 @@ const PublicHome = () => {
 function App() {
   return (
     <HashRouter>
+      <DialogProvider>
       <AuthProvider>
         <Routes>
               <Route path="/" element={<GuestRoute><PublicHome /></GuestRoute>} />
@@ -399,6 +401,7 @@ function App() {
               <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </AuthProvider>
+      </DialogProvider>
     </HashRouter>
   );
 }

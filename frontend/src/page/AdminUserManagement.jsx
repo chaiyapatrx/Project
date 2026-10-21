@@ -2,6 +2,9 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../App';
 import { apiFetch } from '../api';
 import { isNewPasswordValid, PASSWORD_POLICY_MESSAGE } from '../password';
+import { Select } from '../ui';
+import { initials } from '../format';
+import { useDialog } from '../dialog';
 const Toast = ({ message, type, onClose }) => {
     useEffect(() => { const timer = setTimeout(onClose, 3000); return () => clearTimeout(timer); }, [onClose]);
     const bgClass = type === 'success' ? 'bg-emerald-50 border-emerald-200 text-emerald-800' : 'bg-rose-50 border-rose-200 text-rose-800';
@@ -51,7 +54,7 @@ function AdminUserManagement() {
     }, [user]);
 
     const [editingUser, setEditingUser] = useState({ id: null, role: '', department: '' });
-    const [roleDropdownOpen, setRoleDropdownOpen] = useState(false);
+    const dialog = useDialog();
 
     const [newUserModalOpen, setNewUserModalOpen] = useState(false);
     const [newUserData, setNewUserData] = useState({ username: '', password: '', full_name: '', role: 'student', department: '' });
@@ -87,7 +90,7 @@ function AdminUserManagement() {
     };
 
     const handleDeleteUser = async (userId, username) => {
-        if (!window.confirm(`Are you sure you want to deactivate user @${username}?`)) return;
+        if (!await dialog({ title: 'Deactivate user?', message: `@${username} will no longer be able to sign in. Their usage history is kept.`, confirmLabel: 'Deactivate', tone: 'danger' })) return;
         try {
             const response = await apiFetch(`/admin/users/${userId}`, {
                 method: "DELETE"
@@ -162,7 +165,6 @@ function AdminUserManagement() {
             if (response.ok) {
                 setUsers(users.map(u => u.id === userId ? { ...u, role: editingUser.role, department: editingUser.department } : u));
                 setEditingUser({ id: null, role: '', department: '' });
-                setRoleDropdownOpen(false);
                 setToast({ type: 'success', message: "User updated successfully" });
             } else {
                 setToast({ type: 'error', message: "Failed to update user" });
@@ -237,16 +239,7 @@ function AdminUserManagement() {
                             <div className="grid grid-cols-2 gap-3">
                                 <div>
                                     <label className="block text-xs font-bold text-slate-600 uppercase mb-1">Role</label>
-                                    <select
-                                        value={newUserData.role}
-                                        onChange={(e) => setNewUserData({...newUserData, role: e.target.value})}
-                                        className="w-full bg-slate-50 border rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-purple-200"
-                                    >
-                                        <option value="student">Student / User</option>
-                                        <option value="staff">Staff</option>
-                                        <option value="executive">Executive</option>
-                                        <option value="admin">Admin</option>
-                                    </select>
+                                    <Select label="Role" value={newUserData.role} options={roles} onChange={role => setNewUserData({ ...newUserData, role })} />
                                 </div>
                                 <div>
                                     <label className="block text-xs font-bold text-slate-600 uppercase mb-1">Department</label>
@@ -358,7 +351,7 @@ function AdminUserManagement() {
                                                 <td className="p-4 pl-6">
                                                     <div className="flex items-center gap-3">
                                                         <div className="w-10 h-10 rounded-full bg-slate-200 flex items-center justify-center text-slate-500 font-bold text-xs uppercase">
-                                                            {(userData.full_name || userData.username || '?').substring(0, 2)}
+                                                            {initials(userData.full_name || userData.username)}
                                                         </div>
                                                         <div>
                                                             <p className="font-bold text-slate-700 text-sm">{userData.full_name || userData.username}</p>
@@ -368,35 +361,7 @@ function AdminUserManagement() {
                                                 </td>
                                                 <td className="p-4 relative">
                                                     {editingUser.id === userData.id ? (
-                                                        <div className="relative inline-block w-32">
-                                                            <button 
-                                                                onClick={(e) => { e.stopPropagation(); setRoleDropdownOpen(!roleDropdownOpen); }}
-                                                                className="w-full flex items-center justify-between bg-white border border-purple-200 px-3 py-1.5 rounded-lg text-xs font-bold text-slate-700 focus:ring-2 focus:ring-purple-300 hover:border-purple-300 transition-colors shadow-sm"
-                                                            >
-                                                                <span className="capitalize">{editingUser.role}</span>
-                                                                <span className="material-symbols-outlined text-[16px] text-slate-400">
-                                                                    {roleDropdownOpen ? 'expand_less' : 'expand_more'}
-                                                                </span>
-                                                            </button>
-                                                            
-                                                            {roleDropdownOpen && (
-                                                                <>
-                                                                    <div className="fixed inset-0 z-40" onClick={() => setRoleDropdownOpen(false)}></div>
-                                                                    <div className="absolute top-full left-0 mt-1 w-full bg-white border border-slate-100 rounded-xl shadow-xl z-50 py-1 flex flex-col animate-zoom-in origin-top">
-                                                                        {roles.map(r => (
-                                                                            <button 
-                                                                                key={r.value}
-                                                                                onClick={() => { setEditingUser({ ...editingUser, role: r.value }); setRoleDropdownOpen(false); }}
-                                                                                className={`px-3 py-2 text-left text-xs font-bold hover:bg-purple-50 transition-colors flex items-center justify-between ${editingUser.role === r.value ? 'bg-purple-50/50 text-primary' : 'text-slate-600'}`}
-                                                                            >
-                                                                                <span className="capitalize">{r.label}</span>
-                                                                                {editingUser.role === r.value && <span className="material-symbols-outlined text-[14px]">check</span>}
-                                                                            </button>
-                                                                        ))}
-                                                                    </div>
-                                                                </>
-                                                            )}
-                                                        </div>
+                                                        <Select className="w-40" label="Role" value={editingUser.role} options={roles} onChange={role => setEditingUser({ ...editingUser, role })} />
                                                     ) : (
                                                         <span className={`px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wider ${
                                                                 userData.role === 'admin' ? 'bg-purple-100 text-purple-600' :
@@ -413,7 +378,7 @@ function AdminUserManagement() {
                                                             type="text" 
                                                             value={editingUser.department} 
                                                             onChange={(e) => setEditingUser({ ...editingUser, department: e.target.value })}
-                                                            className="bg-white border border-purple-200 px-3 py-1.5 text-xs font-medium text-slate-700 focus:ring-2 focus:ring-purple-300 rounded-lg w-32 shadow-sm transition-all outline-none"
+                                                            className="bg-white border border-slate-200 px-3 py-2 text-sm text-slate-700 focus:ring-2 focus:ring-purple-300 rounded-xl w-40 transition-all outline-none"
                                                             placeholder="e.g. IT, Library"
                                                         />
                                                     ) : (
@@ -432,19 +397,19 @@ function AdminUserManagement() {
                                                             <button onClick={() => saveUser(userData.id)} className="text-emerald-500 hover:bg-emerald-50 p-1 rounded transition-colors" title="Save">
                                                                 <span className="material-symbols-outlined text-lg">check</span>
                                                             </button>
-                                                            <button onClick={() => { setEditingUser({ id: null, role: '', department: '' }); setRoleDropdownOpen(false); }} className="text-slate-400 hover:bg-rose-50 hover:text-rose-500 p-1 rounded transition-colors ml-1" title="Cancel">
+                                                            <button onClick={() => setEditingUser({ id: null, role: '', department: '' })} className="text-slate-400 hover:bg-rose-50 hover:text-rose-500 p-1 rounded transition-colors ml-1" title="Cancel">
                                                                 <span className="material-symbols-outlined text-lg">close</span>
                                                             </button>
                                                         </>
                                                     ) : (
                                                         <>
-                                                            <button onClick={() => setResetPwdModal({ open: true, userId: userData.id, username: userData.username, newPassword: '' })} className="text-slate-400 hover:text-amber-500 p-1 rounded transition-colors opacity-0 group-hover:opacity-100" title="Reset Password">
+                                                            <button onClick={() => setResetPwdModal({ open: true, userId: userData.id, username: userData.username, newPassword: '' })} className="text-slate-400 hover:text-amber-500 p-1 rounded transition-colors" title="Reset Password">
                                                                 <span className="material-symbols-outlined text-lg">key</span>
                                                             </button>
-                                                            <button onClick={() => setEditingUser({ id: userData.id, role: userData.role, department: userData.department || '' })} className="text-slate-400 hover:text-purple-600 p-1 rounded transition-colors opacity-0 group-hover:opacity-100 ml-1" title="Edit User">
+                                                            <button onClick={() => setEditingUser({ id: userData.id, role: userData.role, department: userData.department || '' })} className="text-slate-400 hover:text-purple-600 p-1 rounded transition-colors ml-1" title="Edit User">
                                                                 <span className="material-symbols-outlined text-lg">edit</span>
                                                             </button>
-                                                            <button onClick={() => handleDeleteUser(userData.id, userData.username)} className="text-slate-400 hover:text-rose-500 p-1 rounded transition-colors opacity-0 group-hover:opacity-100 ml-1" title="Deactivate User">
+                                                            <button onClick={() => handleDeleteUser(userData.id, userData.username)} className="text-slate-400 hover:text-rose-500 p-1 rounded transition-colors ml-1" title="Deactivate User">
                                                                 <span className="material-symbols-outlined text-lg">delete</span>
                                                             </button>
                                                         </>

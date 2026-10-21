@@ -184,21 +184,20 @@ function StudentDashboard() {
 
             {/* Navbar */}
             <nav className="sticky top-0 z-50 w-full border-b border-purple-100 bg-white/80 backdrop-blur-md">
-                <div className="max-w-[1600px] mx-auto px-6 h-16 flex items-center justify-between">
-                    <div className="flex items-center gap-2 cursor-pointer" onClick={() => navigate('/')}>
+                <div className="max-w-[1600px] mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 cursor-pointer min-w-0" onClick={() => navigate('/')}>
                         <div className="w-8 h-8 bg-primary rounded-lg flex items-center justify-center">
                             <span className="material-symbols-outlined text-white text-xl">computer</span>
                         </div>
-                        <BrandName role="Student" />
+                        <span className="hidden sm:block"><BrandName role="Student" /></span>
                     </div>
 
-                    <div className="flex items-center gap-4">
-                        
+                    <div className="flex items-center gap-2 sm:gap-4">
                         {/* ✅ My Bookings Menu Button */}
                         {user && (
-                            <button onClick={() => setShowBookingsModal(true)} className="flex items-center gap-2 bg-purple-50 text-primary px-4 py-2 rounded-full text-sm font-bold border border-purple-100 hover:bg-purple-100 transition-colors shadow-sm">
-                                <span className="material-symbols-outlined text-[18px]">receipt_long</span> 
-                                My Bookings
+                            <button onClick={() => setShowBookingsModal(true)} aria-label="My bookings" className="flex items-center gap-2 whitespace-nowrap bg-purple-50 text-primary px-3 sm:px-4 py-2 rounded-full text-sm font-bold border border-purple-100 hover:bg-purple-100 transition-colors shadow-sm">
+                                <span className="material-symbols-outlined text-[18px]" aria-hidden="true">receipt_long</span>
+                                <span className="hidden sm:inline">My Bookings</span>
                                 {myBookings.length > 0 && (
                                     <span className="bg-rose-500 text-white text-[10px] w-5 h-5 flex items-center justify-center rounded-full ml-1">
                                         {myBookings.length}
@@ -210,7 +209,7 @@ function StudentDashboard() {
                         {/* User Profile / Logout */}
                         {user ? (
                             <div className="flex items-center gap-2">
-                                <div className="flex items-center gap-3 pl-2 pr-4 py-1.5 rounded-full hover:bg-slate-50 transition-colors border border-transparent hover:border-purple-100">
+                                <div className="hidden sm:flex items-center gap-3 pl-2 pr-4 py-1.5 rounded-full hover:bg-slate-50 transition-colors border border-transparent hover:border-purple-100">
                                     <div className="w-9 h-9 rounded-full bg-purple-100 border border-purple-200 flex items-center justify-center text-primary shrink-0">
                                         <span className="material-symbols-outlined text-xl">person</span>
                                     </div>
@@ -237,15 +236,15 @@ function StudentDashboard() {
             </nav>
 
             {/* Main Content */}
-            <main className="max-w-[1600px] mx-auto px-6 py-6 flex gap-6 h-[calc(100vh-64px)]">
+            <main className="max-w-[1600px] mx-auto px-4 sm:px-6 py-6 flex gap-6 h-[calc(100vh-64px)]">
                 <div className="flex-1 flex flex-col min-w-0">
 
-                    <div className="flex items-center justify-between mb-6 shrink-0">
-                        <div>
-                            <h2 className="text-2xl font-bold text-slate-900">Computer Stations</h2>
+                    <div className="flex items-center justify-between gap-3 mb-6 shrink-0">
+                        <div className="min-w-0">
+                            <h2 className="text-xl sm:text-2xl font-bold text-slate-900">Computer Stations</h2>
                             <p className="text-slate-500 text-sm mt-0.5">Computer Lab • {stations.length} Total Stations</p>
                         </div>
-                        <div className="flex items-center gap-2 px-4 py-2 rounded-full bg-purple-50 border border-purple-100 shadow-sm">
+                        <div className="flex items-center gap-2 px-3 sm:px-4 py-2 rounded-full bg-purple-50 border border-purple-100 shadow-sm whitespace-nowrap shrink-0">
                             <div className={`w-2.5 h-2.5 rounded-full ${stationsError ? 'bg-rose-500' : 'bg-primary animate-pulse'}`}></div>
                             <span className={`text-sm font-bold ${stationsError ? 'text-rose-600' : 'text-primary'}`}>
                                 {stationsError ? 'Status unavailable' : `${availableCount} Available`}

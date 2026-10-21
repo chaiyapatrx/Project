@@ -139,7 +139,7 @@ function Login() {
                                 <span className="text-xs font-bold uppercase tracking-wider">Back</span>
                             </button>
                         <div className="mb-12 animate-fade-in">
-                            <h1 className="text-slate-900 text-4xl font-black tracking-tight leading-tight">
+                            <h1 className="pr-24 md:pr-0 text-slate-900 text-3xl sm:text-4xl font-black tracking-tight leading-tight">
                                 System Access
                             </h1>
                             <p className="text-slate-500 text-base mt-3 font-normal text-left">

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '../App';
 import { apiFetch } from '../api';
 import { toCSV } from '../csv';
+import { EndReasonBadge, Select } from '../ui';
 
 function AdminUsageHistory() {
     const { user } = useAuth();
@@ -90,26 +91,12 @@ function AdminUsageHistory() {
         if (!dateString) return '—';
         const date = new Date(dateString);
         if (Number.isNaN(date.getTime())) return '—';
-        return date.toLocaleString('en-US', {
-            dateStyle: 'medium',
-            timeStyle: 'short'
-        });
+        return date.toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
     };
 
-    const renderResultBadge = (session) => {
-        const reason = session.termination_reason || (session.end_time ? 'completed' : 'active');
-        let color = 'bg-slate-100 text-slate-700';
-        if (reason === 'normal' || reason === 'completed') color = 'bg-emerald-50 text-emerald-700 border border-emerald-200';
-        else if (reason === 'active') color = 'bg-blue-50 text-blue-700 border border-blue-200 animate-pulse';
-        else if (reason === 'timeout') color = 'bg-amber-50 text-amber-700 border border-amber-200';
-        else if (reason === 'cancelled' || reason === 'force_logout') color = 'bg-rose-50 text-rose-700 border border-rose-200';
-
-        return (
-            <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${color}`}>
-                {reason}
-            </span>
-        );
-    };
+    const renderResultBadge = (session) => (
+        <EndReasonBadge reason={session.termination_reason || (session.end_time ? 'completed' : 'active')} />
+    );
 
     return (
         <div className="h-full overflow-hidden flex flex-col">
@@ -167,18 +154,16 @@ function AdminUsageHistory() {
                             ))}
                         </div>
 
-                        <select
+                        <Select
+                            className="w-32"
+                            label="Rows per page"
                             value={pageSize}
-                            onChange={(e) => {
-                                setPageSize(Number(e.target.value));
+                            options={[10, 20, 50].map(size => ({ value: size, label: `${size} / page` }))}
+                            onChange={size => {
+                                setPageSize(Number(size));
                                 setCurrentPage(1);
                             }}
-                            className="bg-white border border-slate-200 text-slate-700 text-xs font-bold rounded-xl px-2.5 py-2 focus:outline-none focus:ring-2 focus:ring-violet-500/20"
-                        >
-                            <option value={10}>10 / page</option>
-                            <option value={20}>20 / page</option>
-                            <option value={50}>50 / page</option>
-                        </select>
+                        />
                     </div>
                 </div>
 
@@ -194,7 +179,7 @@ function AdminUsageHistory() {
                             <button onClick={() => setRetryCount(count => count + 1)} className="mt-3 font-bold underline">Try again</button>
                         </div>
                     ) : (
-                        <table className="w-full text-left border-collapse">
+                        <div className="overflow-x-auto"><table className="w-full text-left border-collapse">
                             <thead>
                                 <tr className="bg-slate-50/50 border-b border-slate-100 text-xs font-bold text-slate-500 uppercase tracking-wider">
                                     <th className="p-4 pl-6">ID</th>
@@ -218,18 +203,18 @@ function AdminUsageHistory() {
                                     paginatedSessions.map((session) => (
                                         <tr key={session.id} className="hover:bg-purple-50/30 transition-colors">
                                             <td className="p-4 pl-6 font-mono text-xs text-slate-400">#{session.id}</td>
-                                            <td className="p-4 font-bold text-slate-800">
+                                            <td className="p-4 font-bold text-slate-800 whitespace-nowrap">
                                                 {session.user_name || `User #${session.user_id}`}
                                             </td>
-                                            <td className="p-4 text-slate-600">{session.department || '—'}</td>
-                                            <td className="p-4 text-slate-600">
+                                            <td className="p-4 text-slate-600 whitespace-nowrap">{session.department || '—'}</td>
+                                            <td className="p-4 text-slate-600 whitespace-nowrap">
                                                 <div className="flex items-center gap-2">
                                                     <span className="material-symbols-outlined text-sm text-slate-400">desktop_windows</span>
                                                     <span className="font-medium text-slate-800">{session.computer_name || `COM-${session.computer_id}`}</span>
                                                 </div>
                                             </td>
-                                            <td className="p-4 text-xs text-slate-600">{formatDate(session.start_time)}</td>
-                                            <td className="p-4 text-xs text-slate-600">
+                                            <td className="p-4 text-xs text-slate-600 whitespace-nowrap">{formatDate(session.start_time)}</td>
+                                            <td className="p-4 text-xs text-slate-600 whitespace-nowrap">
                                                 {session.end_time ? formatDate(session.end_time) : session.session_ends_at ? (
                                                     <span className="text-emerald-600 font-bold">Active</span>
                                                 ) : '—'}
@@ -244,7 +229,7 @@ function AdminUsageHistory() {
                                     ))
                                 )}
                             </tbody>
-                        </table>
+                        </table></div>
                     )}
 
                     {/* Pagination Bar */}

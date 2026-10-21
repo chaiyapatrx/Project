@@ -7,6 +7,7 @@ import AdminAnalytics from './AdminAnalytics';
 import AdminUsageHistory from './AdminUsageHistory';
 import AdminSettings from './AdminSettings';
 import BrandName from '../BrandName';
+import { initials } from '../format';
 
 // --- CSS Styles (Glassmorphism & Custom Scrollbar) ---
 const styles = `
@@ -132,7 +133,7 @@ function AdminDashboard() {
                     <div className="p-4 border-t border-slate-100">
                         <div className="bg-slate-50 rounded-xl p-3 flex items-center gap-3">
                             <div className="w-10 h-10 rounded-full bg-purple-100 flex items-center justify-center text-[#7c3aed] font-bold uppercase">
-                                {(user?.username || user?.full_name || 'SA').substring(0, 2)}
+                                {initials(user?.full_name || user?.username, 'AD')}
                             </div>
                             <div className="flex-1 min-w-0">
                                 <p className="text-xs font-bold text-slate-800 truncate">{user?.full_name || user?.username || 'Super Admin'}</p>

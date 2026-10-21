@@ -1,16 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useAuth } from '../App';
 import { apiFetch } from '../api';
+import { EndReasonBadge } from '../ui';
 
 const formatDateTime = value => {
     const date = new Date(value);
     return Number.isNaN(date.getTime()) ? '-' : date.toLocaleString('th-TH', { dateStyle: 'medium', timeStyle: 'short' });
-};
-
-const statusLabel = reason => {
-    if (reason === 'normal' || reason === 'timeout') return 'Completed';
-    if (reason === 'cancelled') return 'Cancelled';
-    return reason ? `${reason[0].toUpperCase()}${reason.slice(1)}` : 'Ended';
 };
 
 function ExecReports({ period = 'all' }) {
@@ -232,13 +227,7 @@ function ExecReports({ period = 'all' }) {
                                                 <td className="p-4 whitespace-nowrap text-xs text-slate-500">{formatDateTime(item.end_time)}</td>
                                                 <td className="p-4 text-center text-xs font-mono text-slate-700">{Number(item.duration_minutes) || 0}</td>
                                                 <td className="p-4 pr-6 text-right font-semibold text-xs">
-                                                    <span className={`px-2.5 py-0.5 rounded-full text-[10px] uppercase tracking-wider ${
-                                                        item.termination_reason === 'cancelled'
-                                                            ? 'bg-rose-50 text-rose-700 border border-rose-200'
-                                                            : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                                                    }`}>
-                                                        {statusLabel(item.termination_reason)}
-                                                    </span>
+                                                    <EndReasonBadge reason={item.termination_reason} />
                                                 </td>
                                             </tr>
                                         ))}
